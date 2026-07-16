@@ -288,10 +288,19 @@ def print_displayed_pdf(page, dest_path):
         return False
 
 
-def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000):
+def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000, referer=None):
+    # page.goto() sends no Referer by default, unlike a real link click —
+    # some publisher proxies (Wiley confirmed) bounce a referer-less
+    # request to the PDF URL back to the article's abstract page as an
+    # anti-hotlinking measure. Passing referer= mimics "clicked Download
+    # from this article page" when we already have one to point at.
+    goto_kwargs = {"wait_until": "domcontentloaded", "timeout": nav_timeout}
+    if referer:
+        goto_kwargs["referer"] = referer
+
     try:
         with page.expect_download(timeout=download_wait_ms) as download_info:
-            page.goto(url, wait_until="domcontentloaded", timeout=nav_timeout)
+            page.goto(url, **goto_kwargs)
         download_info.value.save_as(dest_path)
         if validate_saved_pdf(dest_path):
             return True
@@ -314,10 +323,12 @@ def fetch_or_navigate_to_pdf(page, context, url, dest_path, nav_timeout=20000):
     # browser traffic and can get blocked by Cloudflare-style protection
     # even when a full navigation to the same URL would get through (and
     # correctly trigger the bot-check pause if one appears). Try the fast
-    # path first, fall back to a real navigation if that didn't work.
+    # path first, fall back to a real navigation if that didn't work —
+    # with a referer, since we're already sitting on the article page
+    # this URL came from.
     if fetch_pdf_if_thats_what_this_url_is(context, url, dest_path):
         return True
-    return goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout)
+    return goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, referer=page.url)
 
 
 def looks_like_login_page(page):
@@ -545,10 +556,16 @@ def try_download_paper(
     icon_template_path="", icon_match_threshold=0.8,
 ):
     # Layer 1: try each candidate entry point (proxy, LibKey, ...) in turn
-    # — one might serve the PDF directly even if another errors out.
+    # — one might serve the PDF directly even if another errors out. Each
+    # attempt after the first uses wherever the previous one landed as
+    # the referer, so a direct-PDF-URL candidate looks like it was
+    # reached by clicking through from the article page rather than a
+    # cold, referer-less request (which some proxies reject).
+    referer = None
     for url in target_urls:
-        if goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout=25000):
+        if goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout=25000, referer=referer):
             return True
+        referer = page.url
 
     reason = describe_manual_step_needed(page)
     if reason:
