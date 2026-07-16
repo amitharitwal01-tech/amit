@@ -198,7 +198,7 @@ def find_download_element(page, timeout=15000):
     return page.query_selector(DOWNLOAD_CONTROL_SELECTOR)
 
 
-def click_and_capture_download(page, context, element, dest_path, wait_seconds=15):
+def click_and_wait_for_capture(page, context, element, dest_path, wait_seconds=15):
     # A click here might trigger a same-tab download, or open a new tab
     # showing/streaming the PDF — listen for both instead of guessing.
     result = {"done": False}
@@ -247,12 +247,40 @@ def click_and_capture_download(page, context, element, dest_path, wait_seconds=1
         page.wait_for_timeout(250)
     page.remove_listener("download", on_download)
     context.remove_listener("page", on_new_page)
+    return result["done"]
 
-    if result["done"]:
+
+def find_format_menu_pdf_option(page, timeout=4000):
+    # Some readers (Wiley's included) open a "Download" menu with format
+    # choices (PDF, EPUB, ...) on the first click rather than downloading
+    # right away. Look for a short, PDF-labelled menu item that appeared.
+    selector = "[role='menuitem'], a, button, li"
+    try:
+        page.wait_for_selector("text=PDF", timeout=timeout)
+    except PlaywrightTimeoutError:
+        return None
+
+    candidates = []
+    for el in page.query_selector_all(selector):
+        text = (el.inner_text() or "").strip()
+        if text.upper().startswith("PDF") and len(text) < 40:
+            candidates.append((len(text), el))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[0])
+    return candidates[0][1]
+
+
+def click_and_capture_download(page, context, element, dest_path, wait_seconds=15):
+    if click_and_wait_for_capture(page, context, element, dest_path, wait_seconds):
         return True
 
-    # Same story as goto_and_capture_direct_download: the click may have
-    # just navigated this tab to a PDF that Chrome is showing inline.
+    second_step = find_format_menu_pdf_option(page)
+    if second_step and click_and_wait_for_capture(page, context, second_step, dest_path, wait_seconds):
+        return True
+
+    # Same story as goto_and_capture_direct_download: a click may have just
+    # navigated this tab to a PDF that Chrome is showing inline.
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, timeout=8000)
 
 
