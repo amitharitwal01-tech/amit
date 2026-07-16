@@ -5,6 +5,7 @@ stored on disk.
 """
 import csv
 import getpass
+import json
 import os
 import re
 import sys
@@ -18,6 +19,26 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from doi_resolver import CONFIG_PATH, TRACKING_FIELDS, sanitize_filename, load_config as _load_config
 
 PROFILE_DIR = os.path.join(os.getcwd(), "browser_profile")
+
+
+def ensure_pdf_downloads_not_inline(profile_dir):
+    # Makes Chrome always treat a PDF response as a real download instead
+    # of showing it in its built-in viewer — so page.expect_download()
+    # reliably fires (Playwright's own well-tested save mechanism)
+    # instead of needing to capture response bytes by hand.
+    prefs_path = os.path.join(profile_dir, "Default", "Preferences")
+    try:
+        os.makedirs(os.path.dirname(prefs_path), exist_ok=True)
+        prefs = {}
+        if os.path.exists(prefs_path):
+            with open(prefs_path, "r", encoding="utf-8") as f:
+                prefs = json.load(f)
+        prefs.setdefault("plugins", {})["always_open_pdf_externally"] = True
+        with open(prefs_path, "w", encoding="utf-8") as f:
+            json.dump(prefs, f)
+    except (OSError, json.JSONDecodeError):
+        pass
+
 
 # Substring match against whatever host we're on (plain or hostname-mangled
 # through a proxy — dots become dashes there, so both forms are checked).
@@ -231,13 +252,36 @@ def build_candidate_urls(row, config):
     return deduped
 
 
+def save_if_valid_pdf(data, dest_path):
+    # A real PDF file always starts with this magic number. Checking it
+    # is the difference between "downloaded" meaning something and a
+    # corrupted file getting silently marked as done.
+    if not data or not data.startswith(b"%PDF-"):
+        return False
+    with open(dest_path, "wb") as f:
+        f.write(data)
+    return True
+
+
+def validate_saved_pdf(dest_path):
+    try:
+        with open(dest_path, "rb") as f:
+            valid = f.read(5) == b"%PDF-"
+    except OSError:
+        return False
+    if not valid:
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+    return valid
+
+
 def fetch_pdf_if_thats_what_this_url_is(context, url, dest_path, timeout=20000):
     try:
         resp = context.request.get(url, timeout=timeout)
         if resp.ok and "pdf" in resp.headers.get("content-type", "").lower():
-            with open(dest_path, "wb") as f:
-                f.write(resp.body())
-            return True
+            return save_if_valid_pdf(resp.body(), dest_path)
     except Exception:
         pass
     return False
@@ -272,19 +316,15 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
         with page.expect_download(timeout=download_wait_ms) as download_info:
             page.goto(url, wait_until="domcontentloaded", timeout=nav_timeout)
         download_info.value.save_as(dest_path)
-        return True
+        if validate_saved_pdf(dest_path):
+            return True
     except Exception:
         pass
     finally:
         page.remove_listener("response", on_response)
 
-    if captured["body"] is not None:
-        try:
-            with open(dest_path, "wb") as f:
-                f.write(captured["body"])
-            return True
-        except OSError:
-            pass
+    if save_if_valid_pdf(captured["body"], dest_path):
+        return True
 
     # Last resort: a separate re-fetch, in case the above didn't apply
     # (e.g. the PDF loaded via redirect rather than the tracked
@@ -477,7 +517,7 @@ def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
             return
         try:
             download.save_as(dest_path)
-            result["done"] = True
+            result["done"] = validate_saved_pdf(dest_path)
         except Exception:
             pass
 
@@ -491,9 +531,7 @@ def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
         try:
             resp = context.request.get(new_page.url)
             if resp.ok and "pdf" in resp.headers.get("content-type", "").lower():
-                with open(dest_path, "wb") as f:
-                    f.write(resp.body())
-                result["done"] = True
+                result["done"] = save_if_valid_pdf(resp.body(), dest_path)
         except Exception:
             pass
         finally:
@@ -657,6 +695,8 @@ def main():
 
     first_candidates = build_candidate_urls(pending[0], config)
     first_fallback_url = first_candidates[0] if first_candidates else ""
+
+    ensure_pdf_downloads_not_inline(PROFILE_DIR)
 
     with sync_playwright() as p:
         # Playwright's bundled Chromium, not your real installed Chrome —
