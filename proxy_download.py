@@ -18,44 +18,56 @@ from doi_resolver import CONFIG_PATH, TRACKING_FIELDS, sanitize_filename, load_c
 
 PROFILE_DIR = os.path.join(os.getcwd(), "browser_profile")
 
-# Matches a real full-text link if one's already in the HTML, or a rendered
-# "Download PDF" / "View PDF" button on JS-heavy pages like LibKey's.
+# Matches a real full-text link if one's already in the HTML, a rendered
+# "Download PDF" / "View PDF" button on JS-heavy pages like LibKey's, or an
+# icon-only download control that has no visible text — just an
+# aria-label/title (common: a down-arrow glyph with no "Download" caption).
 DOWNLOAD_CONTROL_SELECTOR = (
     "a[href*='full-text-file'], a[href$='.pdf'], a[href*='/pdf/'], "
     "a:has-text('Download PDF'), button:has-text('Download PDF'), "
     "a:has-text('View PDF'), button:has-text('View PDF'), "
-    "a:has-text('Download'), button:has-text('Download')"
+    "a:has-text('Download'), button:has-text('Download'), "
+    "[aria-label*='download' i], [title*='download' i], "
+    "[aria-label*='pdf' i], [title*='pdf' i]"
 )
 
-# Once we've landed on the actual publisher's domain (after LibKey/SSO/a
-# hostname-mangling proxy), most large publisher platforms expose a stable,
-# DOI-based direct PDF path rather than requiring a button click. Paths
-# only (no domain) so this matches whatever host we're actually on —
-# including a proxied one like pubs-acs-org.bib-proxy.uhasselt.be.
-PUBLISHER_PDF_PATHS = {
-    "onlinelibrary.wiley.com": "/doi/pdf/{doi}",
-    "pubs.acs.org": "/doi/pdf/{doi}",
-    "science.org": "/doi/epdf/{doi}",
-    "link.springer.com": "/content/pdf/{doi}.pdf",
-    "tandfonline.com": "/doi/epdf/{doi}",
-    "pnas.org": "/doi/epdf/{doi}",
-}
+# Substring match against whatever host we're on (plain or hostname-mangled
+# through a proxy — dots become dashes there, so both forms are checked).
+# Nature is handled separately: its PDF path is article-slug-based, not
+# DOI-based.
+PUBLISHER_PDF_PATH_RULES = (
+    ("wiley.com", "/doi/pdf/{doi}"),
+    ("acs.org", "/doi/pdf/{doi}"),
+    ("science.org", "/doi/pdf/{doi}"),
+    ("springer.com", "/content/pdf/{doi}.pdf"),
+    ("tandfonline.com", "/doi/epdf/{doi}"),
+    ("pnas.org", "/doi/epdf/{doi}"),
+)
+
+
+def path_template_for_host(host):
+    host = host.lower()
+    for fragment, template in PUBLISHER_PDF_PATH_RULES:
+        if fragment in host or fragment.replace(".", "-") in host:
+            return template
+    return None
 
 
 def guess_publisher_pdf_url(current_url, doi):
     parsed = urlparse(current_url)
     host = parsed.netloc.lower()
 
-    if ("nature.com" in host or "nature-com" in host) and "/articles/" in current_url:
-        return current_url.split("?")[0].rstrip("/") + ".pdf"
+    if "nature.com" in host or "nature-com" in host:
+        if "/articles/" in current_url:
+            return current_url.split("?")[0].rstrip("/") + ".pdf"
+        return None
 
     if not doi:
         return None
-    for domain, path_template in PUBLISHER_PDF_PATHS.items():
-        mangled_domain = domain.replace(".", "-")
-        if domain in host or mangled_domain in host:
-            return f"https://{parsed.netloc}{path_template.format(doi=doi)}"
-    return None
+    path_template = path_template_for_host(host)
+    if not path_template:
+        return None
+    return f"https://{parsed.netloc}{path_template.format(doi=doi)}"
 
 
 def apply_hostname_mangling_proxy(url, suffix):
@@ -74,26 +86,46 @@ def build_doi_proxy_url(doi, suffix):
     return f"https://doi-org{suffix}/{doi}"
 
 
-# CrossRef DOI prefixes are registered per publisher, so the prefix alone
-# usually identifies which platform a paper is on — no redirect needed.
-DOI_PREFIX_TO_DOMAIN = {
+# Used only when Stage 1 couldn't resolve the actual hosting domain for a
+# DOI (network hiccup, etc.). CrossRef DOI prefixes are registered per
+# publisher, so the prefix alone is a reasonable guess — but it can't know
+# a specific journal imprint's subdomain (Wiley has dozens), which is why
+# Stage 1's resolved Publisher_Host is always tried first.
+DOI_PREFIX_TO_FALLBACK_HOST = {
     "10.1021": "pubs.acs.org",
     "10.1002": "onlinelibrary.wiley.com",
-    "10.1126": "science.org",
+    "10.1126": "www.science.org",
     "10.1007": "link.springer.com",
     "10.1080": "tandfonline.com",
     "10.1073": "pnas.org",
 }
 
 
-def build_known_publisher_proxy_url(doi, suffix):
+def build_proxy_pdf_url(doi, publisher_host, suffix):
     if not doi or not suffix:
         return None
-    domain = DOI_PREFIX_TO_DOMAIN.get(doi.split("/")[0])
-    path_template = PUBLISHER_PDF_PATHS.get(domain) if domain else None
+
+    doi_prefix = doi.split("/", 1)[0]
+
+    # Nature-family: the DOI suffix *is* the article slug, and Nature
+    # Portfolio journals sometimes resolve through Springer's domain — the
+    # nature.com URL is preferred regardless of which host DOI resolution
+    # actually landed on.
+    if doi_prefix == "10.1038" and "/" in doi:
+        slug = doi.split("/", 1)[1]
+        return apply_hostname_mangling_proxy(f"https://www.nature.com/articles/{slug}.pdf", suffix)
+
+    host = publisher_host or DOI_PREFIX_TO_FALLBACK_HOST.get(doi_prefix, "")
+    if not host:
+        return None
+    if "nature.com" in host.lower():
+        return None  # need the DOI prefix check above for the slug; nothing else to do
+
+    path_template = path_template_for_host(host)
     if not path_template:
         return None
-    plain_url = f"https://{domain}{path_template.format(doi=doi)}"
+
+    plain_url = f"https://{host}{path_template.format(doi=doi)}"
     return apply_hostname_mangling_proxy(plain_url, suffix)
 
 
@@ -183,15 +215,16 @@ def ensure_logged_in(page, login_cfg, username, password, fallback_url=None):
 
 def build_candidate_urls(row, config):
     # Different access routes work for different papers/publishers, so try
-    # several in order rather than committing to just one: the hostname-
-    # mangling proxy (confirmed to actually work), then LibKey, then a
-    # URL-prefix proxy, then the plain DOI link as a last resort.
+    # several in order rather than committing to just one: the deterministic
+    # proxy URL built from Stage 1's resolved publisher host (most
+    # reliable — no guessing at journal-imprint subdomains), then a generic
+    # doi.org-through-the-proxy URL, then LibKey, then older fallbacks.
     doi = (row.get("DOI") or "").strip()
     proxy_cfg = config.get("proxy", {})
     suffix = proxy_cfg.get("hostname_mangling_suffix", "")
     candidates = []
 
-    known_url = build_known_publisher_proxy_url(doi, suffix)
+    known_url = build_proxy_pdf_url(doi, row.get("Publisher_Host", ""), suffix)
     if known_url:
         candidates.append(known_url)
 

@@ -8,6 +8,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -16,8 +17,16 @@ import yaml
 CONFIG_PATH = "paper_pipeline_config.yaml"
 TRACKING_FIELDS = [
     "Title", "Authors", "DOI", "Status", "PDF_Path",
-    "Source_URL", "Notes", "Last_Updated",
+    "Source_URL", "Publisher_Host", "Notes", "Last_Updated",
 ]
+
+DOI_PREFIXES_TO_STRIP = (
+    "https://doi.org/",
+    "http://doi.org/",
+    "https://dx.doi.org/",
+    "http://dx.doi.org/",
+    "doi:",
+)
 
 
 def load_config():
@@ -84,6 +93,36 @@ def save_tracking(tracking_path, rows):
         writer.writeheader()
         for row in rows.values():
             writer.writerow(row)
+
+
+def normalize_doi(raw):
+    doi = str(raw or "").strip()
+    if not doi or doi.lower() == "nan":
+        return ""
+    for prefix in DOI_PREFIXES_TO_STRIP:
+        if doi.lower().startswith(prefix):
+            doi = doi[len(prefix):]
+            break
+    return doi.strip().strip(".,;: \t")
+
+
+def resolve_publisher_host(doi, session, timeout):
+    # Following https://doi.org/<doi> to its final redirect reveals which
+    # publisher domain (and which subdomain/imprint — Wiley in particular
+    # has dozens, e.g. advanced.onlinelibrary.wiley.com) actually hosts the
+    # article, without needing to log in: the redirect itself is public,
+    # only the content behind it is gated.
+    try:
+        resp = session.head(
+            f"https://doi.org/{doi}", timeout=timeout, allow_redirects=True
+        )
+        if resp.status_code >= 400 or not resp.url:
+            resp = session.get(
+                f"https://doi.org/{doi}", timeout=timeout, allow_redirects=True
+            )
+        return urlparse(resp.url).netloc
+    except requests.RequestException:
+        return ""
 
 
 def sanitize_filename(text, max_len=120):
@@ -173,7 +212,7 @@ def main():
     for i, row in df.iterrows():
         title = str(row[title_col]).strip()
         authors = str(row[authors_col]).strip() if authors_col else ""
-        existing_doi = str(row[doi_col]).strip() if doi_col and pd.notna(row.get(doi_col)) else ""
+        existing_doi = normalize_doi(row[doi_col]) if doi_col else ""
 
         if title in tracking and tracking[title]["Status"] == "downloaded":
             print(f"[{i + 1}/{total}] {title[:70]!r} — already downloaded, skipping")
@@ -183,8 +222,8 @@ def main():
         print(f"[{i + 1}/{total}] {title[:70]!r}", end=" ... ")
 
         doi = existing_doi
-        if not doi or doi.lower() == "nan":
-            doi = resolve_doi_via_crossref(title, authors, session, timeout)
+        if not doi:
+            doi = normalize_doi(resolve_doi_via_crossref(title, authors, session, timeout))
 
         record = {
             "Title": title,
@@ -193,6 +232,7 @@ def main():
             "Status": "",
             "PDF_Path": "",
             "Source_URL": "",
+            "Publisher_Host": "",
             "Notes": "",
             "Last_Updated": datetime.now(timezone.utc).isoformat(),
         }
@@ -206,6 +246,7 @@ def main():
             continue
 
         record["Source_URL"] = f"https://doi.org/{doi}"
+        record["Publisher_Host"] = resolve_publisher_host(doi, session, timeout)
         unpaywall_data = query_unpaywall(doi, email, session, timeout)
         pdf_url = best_oa_pdf_url(unpaywall_data)
 

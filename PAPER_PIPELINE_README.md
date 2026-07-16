@@ -3,14 +3,17 @@
 A two-stage script pipeline that takes a spreadsheet of papers (title,
 authors, and optionally DOI) and downloads as many of them as possible:
 
-- **Stage 1 (`doi_resolver.py`)** — resolves missing DOIs via Crossref, then
-  checks [Unpaywall](https://unpaywall.org/) for a legal, free copy of each
-  paper and downloads whatever it finds.
-- **Stage 2 (`proxy_download.py`)** — for whatever's left, builds a
-  [LibKey](https://libkey.io/) link from each paper's DOI (if your
-  institution uses LibKey), logs in through your university's proxy/SSO
-  with your own credentials, and downloads the paper using your
-  institution's existing subscription access.
+- **Stage 1 (`doi_resolver.py`)** — resolves missing DOIs via Crossref,
+  normalizes them (strips `https://doi.org/`-style prefixes), resolves
+  each DOI's actual publisher hostname (e.g. a specific Wiley journal
+  imprint's subdomain) via the public `doi.org` redirect, then checks
+  [Unpaywall](https://unpaywall.org/) for a legal, free copy and
+  downloads whatever it finds.
+- **Stage 2 (`proxy_download.py`)** — for whatever's left, builds the
+  institutional-proxy PDF URL directly from the publisher hostname Stage 1
+  resolved (deterministic — no clicking through pages to find a download
+  button), tries LibKey as a fallback, logs in through your university's
+  proxy/SSO with your own credentials, and downloads the paper.
 
 Every paper's status is tracked in `download_tracking.csv`, which both
 stages read and update, so you can stop and re-run either stage at any
@@ -32,12 +35,17 @@ Then edit `paper_pipeline_config.yaml`:
 - `paths.excel_input` — your Excel filename.
 - `excel.*_column` — the column names in your sheet (title is required;
   DOI and authors are optional but improve resolution accuracy).
+- `proxy.hostname_mangling_suffix` — if your institution's proxy rewrites
+  hostnames (dots become dashes, then this suffix is appended — e.g.
+  `pubs.acs.org` becomes `pubs-acs-org.bib-proxy.uhasselt.be`) rather than
+  using a URL prefix, set it here. This is Stage 2's primary access route
+  when set; it's built directly from each paper's DOI and Stage 1's
+  resolved publisher hostname, no page-scraping involved.
 - `libkey.library_id` — your institution's LibKey library ID, if it uses
   LibKey/LibKey Nomad for full-text links (look for `libkey.io/libraries/<id>/...`
   the next time you click a LibKey button, or find it at
-  https://libkey.io/choose-library). When set, Stage 2 builds
-  `https://libkey.io/libraries/<id>/<doi>` for each paper directly —
-  this is usually more reliable than scraping the publisher's page.
+  https://libkey.io/choose-library). Used as a fallback if the proxy URL
+  above doesn't pan out for a given paper.
 - `login.*` — your institution's proxy login URL and, if the defaults
   don't work, the CSS selectors for the username/password/submit fields
   on that login page. Leave `login.proxy_login_url` blank to log in by
@@ -72,7 +80,14 @@ marked `needs_proxy`, and will ask for your login ID and password
 
 ## Tracking CSV columns
 
-`Title, Authors, DOI, Status, PDF_Path, Source_URL, Notes, Last_Updated`
+`Title, Authors, DOI, Status, PDF_Path, Source_URL, Publisher_Host, Notes, Last_Updated`
+
+`Publisher_Host` is the actual domain (e.g. `advanced.onlinelibrary.wiley.com`)
+that `https://doi.org/<doi>` redirected to — resolved by Stage 1, and what
+Stage 2 uses to build the proxy PDF URL directly. **If you're upgrading
+from an older run, re-run `python doi_resolver.py` once** so this column
+gets populated for existing rows — Stage 2 falls back to a rougher
+DOI-prefix guess when it's blank.
 
 Status values: `downloaded`, `downloaded_via_proxy`, `needs_proxy`,
 `manual_check_needed`, `no_doi_found`.
