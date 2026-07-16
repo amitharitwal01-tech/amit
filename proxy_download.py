@@ -317,6 +317,30 @@ def find_embedded_pdf_url(page):
 
 DOWNLOAD_NAME_PATTERN = re.compile(r"download|full[\s-]?text\s*pdf|view\s*pdf|\bpdf\b", re.IGNORECASE)
 
+# Confirmed from actual page markup: some readers (Wiley's included) put
+# the icon's label in a sibling tooltip span rather than an aria-label —
+# <button><svg>...</svg><span class="gsr-btn-tp ...">Download</span></button>
+# — invisible by default (CSS-hidden until hover), so the accessible-name
+# lookup below doesn't reliably catch it, but a direct CSS match does.
+KNOWN_MARKUP_SELECTORS = (
+    "button:has(span.gsr-btn-tp:text-is('Download'))",
+    "a:has(span.gsr-btn-tp:text-is('Download'))",
+    "[role='button']:has(span.gsr-btn-tp:text-is('Download'))",
+)
+
+
+def find_download_control_by_known_markup(page, timeout=4000):
+    for selector in KNOWN_MARKUP_SELECTORS:
+        try:
+            locator = page.locator(selector)
+            if locator.count() == 0:
+                continue
+            locator.first.wait_for(state="attached", timeout=timeout)
+            return locator.first
+        except Exception:
+            continue
+    return None
+
 
 def find_download_locator_by_accessibility(page, timeout=6000):
     # Uses the browser's own accessibility-name computation (aria-label,
@@ -430,52 +454,8 @@ def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, timeout=8000)
 
 
-def print_page_to_pdf(playwright_instance, context, page, dest_path, min_bytes=50_000):
-    # Chromium's native print-to-PDF (same as Ctrl+P -> Save as PDF). A
-    # too-small result usually means we printed a login wall or an
-    # abstract-only page rather than the real article.
-    try:
-        page.pdf(path=dest_path)
-        if os.path.getsize(dest_path) >= min_bytes:
-            return True
-    except Exception:
-        pass
-
-    # Some Chrome builds only support print-to-PDF in headless mode, and
-    # this browser runs headed so you can watch/intervene. Fall back to a
-    # short-lived headless clone of the current session (same cookies)
-    # just to render this one page.
-    try:
-        cookies = context.cookies()
-    except Exception:
-        cookies = []
-
-    headless_browser = None
-    try:
-        headless_browser = playwright_instance.chromium.launch(headless=True)
-        headless_context = headless_browser.new_context()
-        if cookies:
-            headless_context.add_cookies(cookies)
-        temp_page = headless_context.new_page()
-        temp_page.goto(page.url, wait_until="domcontentloaded", timeout=20000)
-        temp_page.pdf(path=dest_path)
-    except Exception:
-        return False
-    finally:
-        if headless_browser is not None:
-            try:
-                headless_browser.close()
-            except Exception:
-                pass
-
-    try:
-        return os.path.getsize(dest_path) >= min_bytes
-    except OSError:
-        return False
-
-
 def try_download_paper(
-    playwright_instance, page, context, row, target_urls, dest_path,
+    page, context, row, target_urls, dest_path,
     icon_template_path="", icon_match_threshold=0.8,
 ):
     # Layer 1: try each candidate entry point (proxy, LibKey, ...) in turn
@@ -512,25 +492,30 @@ def try_download_paper(
     if embed_url and fetch_pdf_if_thats_what_this_url_is(context, embed_url, dest_path):
         return True
 
-    # Layer 4: a download control found by its accessible name (works for
-    # icon-only buttons that have an aria-label/title even without
+    # Layer 4: a download control matching known specific markup patterns
+    # confirmed from real pages (e.g. Wiley's icon + hidden tooltip span).
+    locator = find_download_control_by_known_markup(page)
+
+    # Layer 5: failing that, a control found by its accessible name (works
+    # for icon-only buttons that have an aria-label/title even without
     # visible text).
-    locator = find_download_locator_by_accessibility(page)
+    if locator is None:
+        locator = find_download_locator_by_accessibility(page)
+
     if locator is not None:
         if click_and_capture(page, context, lambda: locator.click(timeout=5000), dest_path):
             return True
 
-    # Layer 5: the same icon located by its actual pixel appearance, for
-    # icons with no accessible name at all.
+    # Layer 6: the same icon located by its actual pixel appearance, for
+    # icons with no accessible name or matching markup at all.
     icon_point = find_download_icon_point(page, icon_template_path, icon_match_threshold)
     if icon_point is not None:
         x, y = icon_point
         if click_and_capture(page, context, lambda: page.mouse.click(x, y), dest_path):
             return True
 
-    # Layer 6: nothing found anywhere on this page. Not going to click
-    # around hunting further — print whatever's rendered here directly,
-    # unless it's a login/bot-check wall (pause once more for that first).
+    # Nothing found anywhere on this page — one more chance to log in or
+    # clear a bot-check if that's what's actually blocking things.
     reason = describe_manual_step_needed(page)
     if reason:
         print(f"needs {reason}")
@@ -544,10 +529,6 @@ def try_download_paper(
             pass
         meta_url = find_meta_pdf_url(page)
         if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
-            return True
-
-    if describe_manual_step_needed(page) is None:
-        if print_page_to_pdf(playwright_instance, context, page, dest_path):
             return True
 
     return False
@@ -619,7 +600,7 @@ def main():
 
             try:
                 succeeded = try_download_paper(
-                    p, page, context, row, target_urls, dest_path,
+                    page, context, row, target_urls, dest_path,
                     icon_template_path, icon_match_threshold,
                 )
             except Exception as e:
@@ -640,9 +621,9 @@ def main():
                 downloaded_count += 1
                 print("downloaded")
             else:
-                mark_manual_check(row, f"Could not download or print a PDF from {page.url}")
+                mark_manual_check(row, f"Could not find a download control on {page.url}")
                 failed_count += 1
-                print("could not produce a PDF")
+                print("no download control found")
 
             save_tracking(tracking_path, tracking)
 
