@@ -15,6 +15,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from doi_resolver import CONFIG_PATH, TRACKING_FIELDS, sanitize_filename, load_config as _load_config
 
 PDF_LINK_HINTS = [".pdf", "/pdf/", "pdfft", "download"]
+PROFILE_DIR = os.path.join(os.getcwd(), "browser_profile")
 
 
 def load_config():
@@ -47,13 +48,20 @@ def get_credentials(login_cfg):
     return username, password
 
 
-def attempt_login(page, login_cfg, username, password):
+def attempt_login(page, login_cfg, username, password, fallback_url=None):
     login_url = login_cfg.get("proxy_login_url", "")
     if not login_url:
-        print(
-            "No 'login.proxy_login_url' set in config — please log in "
-            "manually in the browser window that just opened."
-        )
+        if fallback_url:
+            print(
+                "No 'login.proxy_login_url' set — opening the first paper's "
+                "page instead, so you have something to log in through."
+            )
+            page.goto(fallback_url, wait_until="domcontentloaded")
+        else:
+            print(
+                "No 'login.proxy_login_url' set in config — please log in "
+                "manually in the browser window that just opened."
+            )
         return False
 
     page.goto(login_url, wait_until="domcontentloaded")
@@ -80,10 +88,10 @@ def attempt_login(page, login_cfg, username, password):
     return True
 
 
-def ensure_logged_in(page, login_cfg, username, password):
+def ensure_logged_in(page, login_cfg, username, password, fallback_url=None):
     logged_in = False
     try:
-        logged_in = attempt_login(page, login_cfg, username, password)
+        logged_in = attempt_login(page, login_cfg, username, password, fallback_url)
     except Exception as e:
         print(f"Automatic login hit an error: {e}")
 
@@ -157,12 +165,27 @@ def main():
     downloaded_count = 0
     failed_count = 0
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        context = browser.new_context(accept_downloads=True)
-        page = context.new_page()
+    first_fallback_url = build_target_url(pending[0]["Source_URL"], proxy_cfg)
 
-        ensure_logged_in(page, login_cfg, username, password)
+    with sync_playwright() as p:
+        launch_kwargs = dict(headless=False, accept_downloads=True)
+        try:
+            # Prefer your real, installed Chrome — some institutional SSO
+            # pages are pickier about the bundled test browser.
+            context = p.chromium.launch_persistent_context(
+                PROFILE_DIR, channel="chrome", **launch_kwargs
+            )
+        except Exception:
+            context = p.chromium.launch_persistent_context(
+                PROFILE_DIR, **launch_kwargs
+            )
+        page = context.pages[0] if context.pages else context.new_page()
+
+        print(
+            "This browser window remembers your login between runs (saved "
+            f"in {PROFILE_DIR}) — you shouldn't need to log in every time."
+        )
+        ensure_logged_in(page, login_cfg, username, password, first_fallback_url)
 
         for i, row in enumerate(pending, 1):
             title = row["Title"]
@@ -208,7 +231,7 @@ def main():
             row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
             save_tracking(tracking_path, tracking)
 
-        browser.close()
+        context.close()
 
     print()
     print(f"Done. {downloaded_count} downloaded via proxy, {failed_count} need a manual look (see notes in {tracking_path}).")
