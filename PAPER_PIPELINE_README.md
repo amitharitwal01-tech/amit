@@ -10,10 +10,14 @@ authors, and optionally DOI) and downloads as many of them as possible:
   [Unpaywall](https://unpaywall.org/) for a legal, free copy and
   downloads whatever it finds.
 - **Stage 2 (`proxy_download.py`)** — for whatever's left, builds the
-  institutional-proxy PDF URL directly from the publisher hostname Stage 1
+  institutional-proxy PDF URL directly from the publisher URL Stage 1
   resolved (deterministic — no clicking through pages to find a download
-  button), tries LibKey as a fallback, logs in through your university's
-  proxy/SSO with your own credentials, and downloads the paper.
+  button), logs in through your university's proxy/SSO with your own
+  credentials, and downloads the paper. If nothing serves a raw PDF, it
+  prints whatever article page it landed on directly to PDF (Chromium's
+  native print-to-PDF, same as Ctrl+P → Save as PDF) rather than hunting
+  for a download control — publisher UIs change constantly and are the
+  least reliable thing to depend on.
 
 Every paper's status is tracked in `download_tracking.csv`, which both
 stages read and update, so you can stop and re-run either stage at any
@@ -44,17 +48,16 @@ Then edit `paper_pipeline_config.yaml`:
 - `libkey.library_id` — your institution's LibKey library ID, if it uses
   LibKey/LibKey Nomad for full-text links (look for `libkey.io/libraries/<id>/...`
   the next time you click a LibKey button, or find it at
-  https://libkey.io/choose-library). Used as a fallback if the proxy URL
-  above doesn't pan out for a given paper.
+  https://libkey.io/choose-library). Only used when
+  `proxy.hostname_mangling_suffix` is blank.
 - `login.*` — your institution's proxy login URL and, if the defaults
   don't work, the CSS selectors for the username/password/submit fields
   on that login page. Leave `login.proxy_login_url` blank to log in by
-  hand in the browser window Stage 2 opens (this is the recommended
-  setting if you're using LibKey — you'll land on a real article/login
-  page rather than a blank tab).
-- `proxy.url_prefix` — only used as a fallback when `libkey.library_id`
-  is blank or a paper has no DOI; needed only if your institution uses
-  an EZproxy-style URL prefix rather than SSO/Shibboleth.
+  hand in the browser window Stage 2 opens.
+- `proxy.url_prefix` — only used as a fallback when
+  `proxy.hostname_mangling_suffix` and `libkey.library_id` are both
+  blank; needed only if your institution uses an EZproxy-style URL
+  prefix rather than SSO/Shibboleth.
 
 ## Running
 

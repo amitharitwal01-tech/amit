@@ -7,7 +7,6 @@ import csv
 import getpass
 import os
 import sys
-import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -17,19 +16,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from doi_resolver import CONFIG_PATH, TRACKING_FIELDS, sanitize_filename, load_config as _load_config
 
 PROFILE_DIR = os.path.join(os.getcwd(), "browser_profile")
-
-# Matches a real full-text link if one's already in the HTML, a rendered
-# "Download PDF" / "View PDF" button on JS-heavy pages like LibKey's, or an
-# icon-only download control that has no visible text — just an
-# aria-label/title (common: a down-arrow glyph with no "Download" caption).
-DOWNLOAD_CONTROL_SELECTOR = (
-    "a[href*='full-text-file'], a[href$='.pdf'], a[href*='/pdf/'], "
-    "a:has-text('Download PDF'), button:has-text('Download PDF'), "
-    "a:has-text('View PDF'), button:has-text('View PDF'), "
-    "a:has-text('Download'), button:has-text('Download'), "
-    "[aria-label*='download' i], [title*='download' i], "
-    "[aria-label*='pdf' i], [title*='pdf' i]"
-)
 
 # Substring match against whatever host we're on (plain or hostname-mangled
 # through a proxy — dots become dashes there, so both forms are checked).
@@ -327,103 +313,6 @@ def find_embedded_pdf_url(page):
     return None
 
 
-def find_download_element(page, timeout=15000):
-    # wait_for_selector actively polls the DOM, so this covers pages like
-    # LibKey's that render their download button client-side well after
-    # domcontentloaded fires.
-    try:
-        page.wait_for_selector(DOWNLOAD_CONTROL_SELECTOR, timeout=timeout)
-    except PlaywrightTimeoutError:
-        return None
-    return page.query_selector(DOWNLOAD_CONTROL_SELECTOR)
-
-
-def click_and_wait_for_capture(page, context, element, dest_path, wait_seconds=15):
-    # A click here might trigger a same-tab download, or open a new tab
-    # showing/streaming the PDF — listen for both instead of guessing.
-    result = {"done": False}
-
-    def on_download(download):
-        if result["done"]:
-            return
-        try:
-            download.save_as(dest_path)
-            result["done"] = True
-        except Exception:
-            pass
-
-    def on_new_page(new_page):
-        if result["done"]:
-            return
-        try:
-            new_page.wait_for_load_state("domcontentloaded", timeout=8000)
-        except Exception:
-            pass
-        try:
-            resp = context.request.get(new_page.url)
-            if resp.ok and "pdf" in resp.headers.get("content-type", "").lower():
-                with open(dest_path, "wb") as f:
-                    f.write(resp.body())
-                result["done"] = True
-        except Exception:
-            pass
-        finally:
-            try:
-                new_page.close()
-            except Exception:
-                pass
-
-    page.on("download", on_download)
-    context.on("page", on_new_page)
-    try:
-        element.click(timeout=5000)
-    except Exception:
-        page.remove_listener("download", on_download)
-        context.remove_listener("page", on_new_page)
-        return False
-
-    deadline = time.time() + wait_seconds
-    while time.time() < deadline and not result["done"]:
-        page.wait_for_timeout(250)
-    page.remove_listener("download", on_download)
-    context.remove_listener("page", on_new_page)
-    return result["done"]
-
-
-def find_format_menu_pdf_option(page, timeout=4000):
-    # Some readers (Wiley's included) open a "Download" menu with format
-    # choices (PDF, EPUB, ...) on the first click rather than downloading
-    # right away. Look for a short, PDF-labelled menu item that appeared.
-    selector = "[role='menuitem'], a, button, li"
-    try:
-        page.wait_for_selector("text=PDF", timeout=timeout)
-    except PlaywrightTimeoutError:
-        return None
-
-    candidates = []
-    for el in page.query_selector_all(selector):
-        text = (el.inner_text() or "").strip()
-        if text.upper().startswith("PDF") and len(text) < 40:
-            candidates.append((len(text), el))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda pair: pair[0])
-    return candidates[0][1]
-
-
-def click_and_capture_download(page, context, element, dest_path, wait_seconds=15):
-    if click_and_wait_for_capture(page, context, element, dest_path, wait_seconds):
-        return True
-
-    second_step = find_format_menu_pdf_option(page)
-    if second_step and click_and_wait_for_capture(page, context, second_step, dest_path, wait_seconds):
-        return True
-
-    # Same story as goto_and_capture_direct_download: a click may have just
-    # navigated this tab to a PDF that Chrome is showing inline.
-    return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, timeout=8000)
-
-
 def print_page_to_pdf(playwright_instance, context, page, dest_path, min_bytes=50_000):
     # Chromium's native print-to-PDF (same as Ctrl+P -> Save as PDF). A
     # too-small result usually means we printed a login wall or an
@@ -503,36 +392,25 @@ def try_download_paper(playwright_instance, page, context, row, target_urls, des
     if embed_url and fetch_pdf_if_thats_what_this_url_is(context, embed_url, dest_path):
         return True
 
-    # Layer 4: search this exact page for an actual download control.
-    # If nothing turns up, don't go hunting elsewhere (no more
-    # navigation) — fall straight to printing this page instead.
-    el = find_download_element(page)
+    # Layer 4: no download link found anywhere on this page (metadata,
+    # embedded viewer). Not going to click around hunting for one — print
+    # whatever's rendered here directly, unless it's a login/bot-check
+    # wall (in which case pause once more for that first).
+    reason = describe_manual_step_needed(page)
+    if reason:
+        print(f"needs {reason}")
+        input(
+            "Please handle it in the browser window, then press Enter "
+            "here to continue..."
+        )
+        try:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+        except Exception:
+            pass
+        meta_url = find_meta_pdf_url(page)
+        if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
+            return True
 
-    if el is None:
-        reason = describe_manual_step_needed(page)
-        if reason:
-            print(f"needs {reason}")
-            input(
-                "Please handle it in the browser window, then press Enter "
-                "here to continue..."
-            )
-            try:
-                page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
-            except Exception:
-                pass
-            meta_url = find_meta_pdf_url(page)
-            if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
-                return True
-            el = find_download_element(page)
-
-    if el is not None and click_and_capture_download(page, context, el, dest_path):
-        return True
-
-    # Layer 5: last resort — no download control found anywhere on this
-    # page, and we're not going to go looking on another one. If it's
-    # rendering real article content (not a login/bot-check wall), print
-    # it to PDF directly instead — confirmed working on Wiley pages that
-    # render full text but hide the PDF behind a control we can't find.
     if describe_manual_step_needed(page) is None:
         if print_page_to_pdf(playwright_instance, context, page, dest_path):
             return True
@@ -577,17 +455,12 @@ def main():
     first_fallback_url = first_candidates[0] if first_candidates else ""
 
     with sync_playwright() as p:
-        launch_kwargs = dict(headless=False, accept_downloads=True)
-        try:
-            # Prefer your real, installed Chrome — some institutional SSO
-            # pages are pickier about the bundled test browser.
-            context = p.chromium.launch_persistent_context(
-                PROFILE_DIR, channel="chrome", **launch_kwargs
-            )
-        except Exception:
-            context = p.chromium.launch_persistent_context(
-                PROFILE_DIR, **launch_kwargs
-            )
+        # Playwright's bundled Chromium, not your real installed Chrome —
+        # more stable for automation (real Chrome needs a --no-sandbox
+        # flag here that's caused the browser to crash mid-run).
+        context = p.chromium.launch_persistent_context(
+            PROFILE_DIR, headless=False, accept_downloads=True
+        )
         page = context.pages[0] if context.pages else context.new_page()
 
         print(
@@ -626,9 +499,9 @@ def main():
                 downloaded_count += 1
                 print("downloaded")
             else:
-                mark_manual_check(row, f"Could not find or trigger a download on {page.url}")
+                mark_manual_check(row, f"Could not download or print a PDF from {page.url}")
                 failed_count += 1
-                print("no download button found")
+                print("could not produce a PDF")
 
             save_tracking(tracking_path, tracking)
 
