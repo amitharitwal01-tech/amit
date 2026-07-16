@@ -53,23 +53,6 @@ def path_template_for_host(host):
     return None
 
 
-def guess_publisher_pdf_url(current_url, doi):
-    parsed = urlparse(current_url)
-    host = parsed.netloc.lower()
-
-    if "nature.com" in host or "nature-com" in host:
-        if "/articles/" in current_url:
-            return current_url.split("?")[0].rstrip("/") + ".pdf"
-        return None
-
-    if not doi:
-        return None
-    path_template = path_template_for_host(host)
-    if not path_template:
-        return None
-    return f"https://{parsed.netloc}{path_template.format(doi=doi)}"
-
-
 def apply_hostname_mangling_proxy(url, suffix):
     # Rewrites e.g. https://pubs.acs.org/doi/pdf/<doi> into
     # https://pubs-acs-org<suffix>/doi/pdf/<doi> — the URL scheme some
@@ -508,23 +491,21 @@ def try_download_paper(playwright_instance, page, context, row, target_urls, des
         if goto_and_capture_direct_download(page, context, page.url, dest_path, nav_timeout=15000):
             return True
 
-    # Layer 2: known publisher platforms expose a stable DOI-based PDF URL.
-    guess_url = guess_publisher_pdf_url(page.url, row.get("DOI", ""))
-    if guess_url and guess_url != page.url:
-        if goto_and_capture_direct_download(page, context, guess_url, dest_path, nav_timeout=20000):
-            return True
-
-    # Layer 3: scholarly metadata embedded in <head>, if the page has it.
+    # Layer 2: scholarly metadata embedded in <head>, if the page has it.
+    # A background fetch, not a navigation — doesn't move the browser.
     meta_url = find_meta_pdf_url(page)
     if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
         return True
 
-    # Layer 4: an embedded PDF viewer (<embed>/<iframe>) rather than a link.
+    # Layer 3: an embedded PDF viewer (<embed>/<iframe>) rather than a
+    # link. Also just a background fetch.
     embed_url = find_embedded_pdf_url(page)
     if embed_url and fetch_pdf_if_thats_what_this_url_is(context, embed_url, dest_path):
         return True
 
-    # Layer 5: hunt for and click an actual download control on the page.
+    # Layer 4: search this exact page for an actual download control.
+    # If nothing turns up, don't go hunting elsewhere (no more
+    # navigation) — fall straight to printing this page instead.
     el = find_download_element(page)
 
     if el is None:
@@ -547,11 +528,11 @@ def try_download_paper(playwright_instance, page, context, row, target_urls, des
     if el is not None and click_and_capture_download(page, context, el, dest_path):
         return True
 
-    # Layer 6: last resort — if the page is rendering real article content
-    # (not a login/bot-check wall), print it to PDF directly. Sidesteps
-    # hunting for a download control entirely; confirmed working on Wiley
-    # landing pages that render full text but hide the PDF behind a
-    # control this script can't reliably find.
+    # Layer 5: last resort — no download control found anywhere on this
+    # page, and we're not going to go looking on another one. If it's
+    # rendering real article content (not a login/bot-check wall), print
+    # it to PDF directly instead — confirmed working on Wiley pages that
+    # render full text but hide the PDF behind a control we can't find.
     if describe_manual_step_needed(page) is None:
         if print_page_to_pdf(playwright_instance, context, page, dest_path):
             return True
@@ -615,6 +596,8 @@ def main():
         )
         ensure_logged_in(page, login_cfg, username, password, first_fallback_url)
 
+        browser_died = False
+
         for i, row in enumerate(pending, 1):
             title = row["Title"]
             print(f"[{i}/{len(pending)}] {title[:70]!r}", end=" ... ")
@@ -623,7 +606,22 @@ def main():
             doi_part = row["DOI"].replace("/", "_") if row["DOI"] else sanitize_filename(title)
             dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
 
-            if try_download_paper(p, page, context, row, target_urls, dest_path):
+            try:
+                succeeded = try_download_paper(p, page, context, row, target_urls, dest_path)
+            except Exception as e:
+                if "closed" in str(e).lower() or "closed" in type(e).__name__.lower():
+                    print(f"browser window closed unexpectedly ({type(e).__name__}) — stopping here")
+                    mark_manual_check(row, f"Browser closed before this paper finished: {e}")
+                    save_tracking(tracking_path, tracking)
+                    browser_died = True
+                    break
+                mark_manual_check(row, f"Unexpected error: {e}")
+                failed_count += 1
+                print(f"error ({type(e).__name__})")
+                save_tracking(tracking_path, tracking)
+                continue
+
+            if succeeded:
                 mark_downloaded(row, dest_path)
                 downloaded_count += 1
                 print("downloaded")
@@ -634,7 +632,10 @@ def main():
 
             save_tracking(tracking_path, tracking)
 
-        context.close()
+        if not browser_died:
+            context.close()
+        elif i < len(pending):
+            print(f"{len(pending) - i} paper(s) weren't attempted — just run this script again to pick up where it left off.")
 
     print()
     print(f"Done. {downloaded_count} downloaded via proxy, {failed_count} need a manual look (see notes in {tracking_path}).")
