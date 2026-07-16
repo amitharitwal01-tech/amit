@@ -152,19 +152,35 @@ def build_target_url(row, config):
     return f"{prefix}{source_url}" if prefix else source_url
 
 
-def goto_and_capture_direct_download(page, url, dest_path, nav_timeout, download_wait_ms=5000):
+def fetch_pdf_if_thats_what_this_url_is(context, url, dest_path, timeout=20000):
+    try:
+        resp = context.request.get(url, timeout=timeout)
+        if resp.ok and "pdf" in resp.headers.get("content-type", "").lower():
+            with open(dest_path, "wb") as f:
+                f.write(resp.body())
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000):
     # goto() runs to completion first (up to nav_timeout), then exiting the
     # expect_download block waits up to download_wait_ms more for a download
     # event — short, since it fires in sync with the response, not later.
-    # Any failure here (nav timeout, no download, bad URL) just means "not
-    # a direct download" — the caller falls back to scraping the page.
     try:
         with page.expect_download(timeout=download_wait_ms) as download_info:
             page.goto(url, wait_until="domcontentloaded", timeout=nav_timeout)
         download_info.value.save_as(dest_path)
         return True
     except Exception:
-        return False
+        pass
+
+    # No "download" event doesn't mean no PDF — Chrome's built-in viewer
+    # renders PDFs inline in the tab instead of downloading them. Whatever
+    # URL the page landed on, re-request it directly (same session cookies)
+    # and check if the response itself is actually a PDF.
+    return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
 
 
 def looks_like_login_page(page):
@@ -220,17 +236,24 @@ def click_and_capture_download(page, context, element, dest_path, wait_seconds=1
     page.on("download", on_download)
     context.on("page", on_new_page)
     try:
-        try:
-            element.click(timeout=5000)
-        except Exception:
-            return False
-        deadline = time.time() + wait_seconds
-        while time.time() < deadline and not result["done"]:
-            page.wait_for_timeout(250)
-        return result["done"]
-    finally:
+        element.click(timeout=5000)
+    except Exception:
         page.remove_listener("download", on_download)
         context.remove_listener("page", on_new_page)
+        return False
+
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline and not result["done"]:
+        page.wait_for_timeout(250)
+    page.remove_listener("download", on_download)
+    context.remove_listener("page", on_new_page)
+
+    if result["done"]:
+        return True
+
+    # Same story as goto_and_capture_direct_download: the click may have
+    # just navigated this tab to a PDF that Chrome is showing inline.
+    return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, timeout=8000)
 
 
 def main():
@@ -283,7 +306,7 @@ def main():
             doi_part = row["DOI"].replace("/", "_") if row["DOI"] else sanitize_filename(title)
             dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
 
-            if goto_and_capture_direct_download(page, target_url, dest_path, nav_timeout=25000):
+            if goto_and_capture_direct_download(page, context, target_url, dest_path, nav_timeout=25000):
                 row["Status"] = "downloaded_via_proxy"
                 row["PDF_Path"] = dest_path
                 row["Notes"] = ""
@@ -295,7 +318,7 @@ def main():
 
             guess_url = guess_publisher_pdf_url(page.url, row.get("DOI", ""))
             if guess_url and guess_url != page.url:
-                if goto_and_capture_direct_download(page, guess_url, dest_path, nav_timeout=20000):
+                if goto_and_capture_direct_download(page, context, guess_url, dest_path, nav_timeout=20000):
                     row["Status"] = "downloaded_via_proxy"
                     row["PDF_Path"] = dest_path
                     row["Notes"] = ""
