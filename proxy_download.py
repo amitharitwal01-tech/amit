@@ -86,6 +86,13 @@ def build_proxy_pdf_url(doi, publisher_host, suffix):
         slug = doi.split("/", 1)[1]
         return apply_hostname_mangling_proxy(f"https://www.nature.com/articles/{slug}.pdf", suffix)
 
+    # Wiley: confirmed via the page's own citation_pdf_url meta tag that
+    # the PDF always lives at the bare onlinelibrary.wiley.com domain,
+    # regardless of which journal-imprint subdomain (advanced.,
+    # chemistry-europe., etc.) the article page itself uses.
+    if doi_prefix == "10.1002":
+        return apply_hostname_mangling_proxy(f"https://onlinelibrary.wiley.com/doi/pdf/{doi}", suffix)
+
     host = publisher_host or DOI_PREFIX_TO_FALLBACK_HOST.get(doi_prefix, "")
     if not host:
         return None
@@ -253,6 +260,17 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
     # URL the page landed on, re-request it directly (same session cookies)
     # and check if the response itself is actually a PDF.
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
+
+
+def fetch_or_navigate_to_pdf(page, context, url, dest_path, nav_timeout=20000):
+    # A raw background fetch (context.request) doesn't look like real
+    # browser traffic and can get blocked by Cloudflare-style protection
+    # even when a full navigation to the same URL would get through (and
+    # correctly trigger the bot-check pause if one appears). Try the fast
+    # path first, fall back to a real navigation if that didn't work.
+    if fetch_pdf_if_thats_what_this_url_is(context, url, dest_path):
+        return True
+    return goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout)
 
 
 def looks_like_login_page(page):
@@ -485,8 +503,6 @@ def try_download_paper(
         if goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout=25000):
             return True
 
-    target_url = target_urls[0] if target_urls else ""
-
     reason = describe_manual_step_needed(page)
     if reason:
         print(f"needs {reason}")
@@ -502,15 +518,15 @@ def try_download_paper(
             return True
 
     # Layer 2: scholarly metadata embedded in <head>, if the page has it.
-    # A background fetch, not a navigation — doesn't move the browser.
+    # Tries a background fetch first, falls back to a real navigation
+    # (survives Cloudflare-style blocks on the lightweight fetch).
     meta_url = find_meta_pdf_url(page)
-    if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
+    if meta_url and fetch_or_navigate_to_pdf(page, context, meta_url, dest_path):
         return True
 
-    # Layer 3: an embedded PDF viewer (<embed>/<iframe>) rather than a
-    # link. Also just a background fetch.
+    # Layer 3: an embedded PDF viewer (<embed>/<iframe>) rather than a link.
     embed_url = find_embedded_pdf_url(page)
-    if embed_url and fetch_pdf_if_thats_what_this_url_is(context, embed_url, dest_path):
+    if embed_url and fetch_or_navigate_to_pdf(page, context, embed_url, dest_path):
         return True
 
     # Layer 4: a download control matching known specific markup patterns
@@ -536,7 +552,11 @@ def try_download_paper(
             return True
 
     # Nothing found anywhere on this page — one more chance to log in or
-    # clear a bot-check if that's what's actually blocking things.
+    # clear a bot-check if that's what's actually blocking things. Re-check
+    # whatever's currently loaded rather than navigating anywhere again —
+    # re-hitting a login-triggering URL after already clearing it once can
+    # invalidate the just-established session (seen as a stale/expired
+    # Shibboleth flow error).
     reason = describe_manual_step_needed(page)
     if reason:
         print(f"needs {reason}")
@@ -545,11 +565,11 @@ def try_download_paper(
             "here to continue..."
         )
         try:
-            page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
         except Exception:
             pass
         meta_url = find_meta_pdf_url(page)
-        if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
+        if meta_url and fetch_or_navigate_to_pdf(page, context, meta_url, dest_path):
             return True
 
     return False
