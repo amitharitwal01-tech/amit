@@ -7,6 +7,7 @@ import csv
 import getpass
 import os
 import sys
+import time
 from datetime import datetime, timezone
 
 import yaml
@@ -14,8 +15,16 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 from doi_resolver import CONFIG_PATH, TRACKING_FIELDS, sanitize_filename, load_config as _load_config
 
-PDF_LINK_HINTS = [".pdf", "/pdf/", "pdfft", "download"]
 PROFILE_DIR = os.path.join(os.getcwd(), "browser_profile")
+
+# Matches a real full-text link if one's already in the HTML, or a rendered
+# "Download PDF" / "View PDF" button on JS-heavy pages like LibKey's.
+DOWNLOAD_CONTROL_SELECTOR = (
+    "a[href*='full-text-file'], a[href$='.pdf'], a[href*='/pdf/'], "
+    "a:has-text('Download PDF'), button:has-text('Download PDF'), "
+    "a:has-text('View PDF'), button:has-text('View PDF'), "
+    "a:has-text('Download'), button:has-text('Download')"
+)
 
 
 def load_config():
@@ -129,44 +138,70 @@ def goto_and_capture_direct_download(page, url, dest_path, nav_timeout, download
         return False
 
 
-def find_pdf_url(page):
-    meta = page.query_selector("meta[name='citation_pdf_url']")
-    if meta:
-        content = meta.get_attribute("content")
-        if content:
-            return content
-
-    for link in page.query_selector_all("a"):
-        href = link.get_attribute("href") or ""
-        text = (link.inner_text() or "").lower()
-        if any(hint in href.lower() for hint in PDF_LINK_HINTS):
-            return href
-        if "pdf" in text and ("download" in text or "view" in text or "full text" in text):
-            if href:
-                return href
-
-    return None
+def looks_like_login_page(page):
+    return page.query_selector("input[type='password']") is not None
 
 
-def download_via_browser(context, page, pdf_url, dest_path):
+def find_download_element(page, timeout=15000):
+    # wait_for_selector actively polls the DOM, so this covers pages like
+    # LibKey's that render their download button client-side well after
+    # domcontentloaded fires.
     try:
-        if pdf_url.startswith("http"):
-            resp = context.request.get(pdf_url)
+        page.wait_for_selector(DOWNLOAD_CONTROL_SELECTOR, timeout=timeout)
+    except PlaywrightTimeoutError:
+        return None
+    return page.query_selector(DOWNLOAD_CONTROL_SELECTOR)
+
+
+def click_and_capture_download(page, context, element, dest_path, wait_seconds=15):
+    # A click here might trigger a same-tab download, or open a new tab
+    # showing/streaming the PDF — listen for both instead of guessing.
+    result = {"done": False}
+
+    def on_download(download):
+        if result["done"]:
+            return
+        try:
+            download.save_as(dest_path)
+            result["done"] = True
+        except Exception:
+            pass
+
+    def on_new_page(new_page):
+        if result["done"]:
+            return
+        try:
+            new_page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
+        try:
+            resp = context.request.get(new_page.url)
             if resp.ok and "pdf" in resp.headers.get("content-type", "").lower():
                 with open(dest_path, "wb") as f:
                     f.write(resp.body())
-                return True
-    except Exception:
-        pass
+                result["done"] = True
+        except Exception:
+            pass
+        finally:
+            try:
+                new_page.close()
+            except Exception:
+                pass
 
+    page.on("download", on_download)
+    context.on("page", on_new_page)
     try:
-        with page.expect_download(timeout=15000) as download_info:
-            page.goto(pdf_url)
-        download = download_info.value
-        download.save_as(dest_path)
-        return True
-    except Exception:
-        return False
+        try:
+            element.click(timeout=5000)
+        except Exception:
+            return False
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline and not result["done"]:
+            page.wait_for_timeout(250)
+        return result["done"]
+    finally:
+        page.remove_listener("download", on_download)
+        context.remove_listener("page", on_new_page)
 
 
 def main():
@@ -219,7 +254,7 @@ def main():
             doi_part = row["DOI"].replace("/", "_") if row["DOI"] else sanitize_filename(title)
             dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
 
-            if goto_and_capture_direct_download(page, target_url, dest_path, nav_timeout=20000):
+            if goto_and_capture_direct_download(page, target_url, dest_path, nav_timeout=25000):
                 row["Status"] = "downloaded_via_proxy"
                 row["PDF_Path"] = dest_path
                 row["Notes"] = ""
@@ -229,17 +264,30 @@ def main():
                 save_tracking(tracking_path, tracking)
                 continue
 
-            pdf_url = find_pdf_url(page)
-            if not pdf_url:
+            el = find_download_element(page)
+
+            if el is None and looks_like_login_page(page):
+                print("needs a fresh login")
+                input(
+                    "Please log in again in the browser window, then press "
+                    "Enter here to continue..."
+                )
+                try:
+                    page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+                except Exception:
+                    pass
+                el = find_download_element(page)
+
+            if el is None:
                 row["Status"] = "manual_check_needed"
-                row["Notes"] = f"Could not locate a PDF link on {page.url}"
+                row["Notes"] = f"Could not find a download button on {page.url}"
                 row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
                 failed_count += 1
-                print("no PDF link found")
+                print("no download button found")
                 save_tracking(tracking_path, tracking)
                 continue
 
-            if download_via_browser(context, page, pdf_url, dest_path):
+            if click_and_capture_download(page, context, el, dest_path):
                 row["Status"] = "downloaded_via_proxy"
                 row["PDF_Path"] = dest_path
                 row["Notes"] = ""
@@ -247,7 +295,7 @@ def main():
                 print("downloaded")
             else:
                 row["Status"] = "manual_check_needed"
-                row["Notes"] = f"Found a likely PDF link but download failed: {pdf_url}"
+                row["Notes"] = f"Found a download button but the download didn't complete: {page.url}"
                 failed_count += 1
                 print("download failed")
 
