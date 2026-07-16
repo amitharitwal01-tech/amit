@@ -254,6 +254,34 @@ def looks_like_login_page(page):
     return page.query_selector("input[type='password']") is not None
 
 
+BOT_CHALLENGE_PHRASES = (
+    "verify you are human",
+    "checking your browser",
+    "performing security verification",
+    "attention required",
+    "just a moment",
+)
+
+
+def looks_like_bot_challenge_page(page):
+    # Cloudflare/similar anti-bot walls (common on Wiley, sometimes
+    # others). Not something to script around — the fix is to pause and
+    # let the person actually sitting at the browser tick the box.
+    try:
+        content = (page.content() or "").lower()
+    except Exception:
+        return False
+    return any(phrase in content for phrase in BOT_CHALLENGE_PHRASES)
+
+
+def describe_manual_step_needed(page):
+    if looks_like_bot_challenge_page(page):
+        return "a quick human/bot-check (tick the verification box)"
+    if looks_like_login_page(page):
+        return "a fresh login"
+    return None
+
+
 def find_meta_pdf_url(page):
     # The "citation_pdf_url" meta tag is a long-standing scholarly-metadata
     # convention (used by Google Scholar, Zotero, etc.) that most major
@@ -388,6 +416,20 @@ def try_download_paper(page, context, row, target_urls, dest_path):
 
     target_url = target_urls[0] if target_urls else ""
 
+    reason = describe_manual_step_needed(page)
+    if reason:
+        print(f"needs {reason}")
+        input(
+            "Please handle it in the browser window, then press Enter "
+            "here to continue..."
+        )
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:
+            pass
+        if goto_and_capture_direct_download(page, context, page.url, dest_path, nav_timeout=15000):
+            return True
+
     # Layer 2: known publisher platforms expose a stable DOI-based PDF URL.
     guess_url = guess_publisher_pdf_url(page.url, row.get("DOI", ""))
     if guess_url and guess_url != page.url:
@@ -407,20 +449,22 @@ def try_download_paper(page, context, row, target_urls, dest_path):
     # Layer 5: hunt for and click an actual download control on the page.
     el = find_download_element(page)
 
-    if el is None and looks_like_login_page(page):
-        print("needs a fresh login")
-        input(
-            "Please log in again in the browser window, then press Enter "
-            "here to continue..."
-        )
-        try:
-            page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
-        except Exception:
-            pass
-        meta_url = find_meta_pdf_url(page)
-        if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
-            return True
-        el = find_download_element(page)
+    if el is None:
+        reason = describe_manual_step_needed(page)
+        if reason:
+            print(f"needs {reason}")
+            input(
+                "Please handle it in the browser window, then press Enter "
+                "here to continue..."
+            )
+            try:
+                page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+            except Exception:
+                pass
+            meta_url = find_meta_pdf_url(page)
+            if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
+                return True
+            el = find_download_element(page)
 
     if el is None:
         return False
