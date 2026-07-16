@@ -6,7 +6,9 @@ stored on disk.
 import csv
 import getpass
 import os
+import re
 import sys
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -313,6 +315,121 @@ def find_embedded_pdf_url(page):
     return None
 
 
+DOWNLOAD_NAME_PATTERN = re.compile(r"download|full[\s-]?text\s*pdf|view\s*pdf|\bpdf\b", re.IGNORECASE)
+
+
+def find_download_locator_by_accessibility(page, timeout=6000):
+    # Uses the browser's own accessibility-name computation (aria-label,
+    # aria-labelledby, title, or associated/hidden text) rather than raw
+    # CSS attributes — catches icon-only controls a plain selector misses,
+    # as long as the icon has *some* accessible name at all.
+    for role in ("link", "button"):
+        locator = page.get_by_role(role, name=DOWNLOAD_NAME_PATTERN)
+        try:
+            if locator.count() == 0:
+                continue
+            locator.first.wait_for(state="visible", timeout=timeout)
+            return locator.first
+        except Exception:
+            continue
+    return None
+
+
+def find_download_icon_point(page, template_path, threshold=0.8):
+    # Last resort: locate the download icon by its actual pixel
+    # appearance (OpenCV template matching) when it has no accessible
+    # name at all. Returns viewport (x, y) coordinates to click, or None.
+    if not template_path or not os.path.exists(template_path):
+        return None
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+
+    try:
+        page.evaluate("window.scrollTo(0, 0)")
+    except Exception:
+        pass
+
+    try:
+        screenshot_bytes = page.screenshot()
+    except Exception:
+        return None
+
+    screenshot = cv2.imdecode(np.frombuffer(screenshot_bytes, np.uint8), cv2.IMREAD_COLOR)
+    template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+    if screenshot is None or template is None:
+        return None
+
+    th, tw = template.shape[:2]
+    if th > screenshot.shape[0] or tw > screenshot.shape[1]:
+        return None
+
+    result = cv2.matchTemplate(screenshot, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+    if max_val < threshold:
+        return None
+
+    return (max_loc[0] + tw // 2, max_loc[1] + th // 2)
+
+
+def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
+    # Shared by both detection methods above: a click might trigger a
+    # same-tab download, or open a new tab showing/streaming the PDF.
+    result = {"done": False}
+
+    def on_download(download):
+        if result["done"]:
+            return
+        try:
+            download.save_as(dest_path)
+            result["done"] = True
+        except Exception:
+            pass
+
+    def on_new_page(new_page):
+        if result["done"]:
+            return
+        try:
+            new_page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
+        try:
+            resp = context.request.get(new_page.url)
+            if resp.ok and "pdf" in resp.headers.get("content-type", "").lower():
+                with open(dest_path, "wb") as f:
+                    f.write(resp.body())
+                result["done"] = True
+        except Exception:
+            pass
+        finally:
+            try:
+                new_page.close()
+            except Exception:
+                pass
+
+    page.on("download", on_download)
+    context.on("page", on_new_page)
+    try:
+        click_fn()
+    except Exception:
+        page.remove_listener("download", on_download)
+        context.remove_listener("page", on_new_page)
+        return False
+
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline and not result["done"]:
+        page.wait_for_timeout(250)
+    page.remove_listener("download", on_download)
+    context.remove_listener("page", on_new_page)
+
+    if result["done"]:
+        return True
+
+    return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, timeout=8000)
+
+
 def print_page_to_pdf(playwright_instance, context, page, dest_path, min_bytes=50_000):
     # Chromium's native print-to-PDF (same as Ctrl+P -> Save as PDF). A
     # too-small result usually means we printed a login wall or an
@@ -357,7 +474,10 @@ def print_page_to_pdf(playwright_instance, context, page, dest_path, min_bytes=5
         return False
 
 
-def try_download_paper(playwright_instance, page, context, row, target_urls, dest_path):
+def try_download_paper(
+    playwright_instance, page, context, row, target_urls, dest_path,
+    icon_template_path="", icon_match_threshold=0.8,
+):
     # Layer 1: try each candidate entry point (proxy, LibKey, ...) in turn
     # — one might serve the PDF directly even if another errors out.
     for url in target_urls:
@@ -392,10 +512,25 @@ def try_download_paper(playwright_instance, page, context, row, target_urls, des
     if embed_url and fetch_pdf_if_thats_what_this_url_is(context, embed_url, dest_path):
         return True
 
-    # Layer 4: no download link found anywhere on this page (metadata,
-    # embedded viewer). Not going to click around hunting for one — print
-    # whatever's rendered here directly, unless it's a login/bot-check
-    # wall (in which case pause once more for that first).
+    # Layer 4: a download control found by its accessible name (works for
+    # icon-only buttons that have an aria-label/title even without
+    # visible text).
+    locator = find_download_locator_by_accessibility(page)
+    if locator is not None:
+        if click_and_capture(page, context, lambda: locator.click(timeout=5000), dest_path):
+            return True
+
+    # Layer 5: the same icon located by its actual pixel appearance, for
+    # icons with no accessible name at all.
+    icon_point = find_download_icon_point(page, icon_template_path, icon_match_threshold)
+    if icon_point is not None:
+        x, y = icon_point
+        if click_and_capture(page, context, lambda: page.mouse.click(x, y), dest_path):
+            return True
+
+    # Layer 6: nothing found anywhere on this page. Not going to click
+    # around hunting further — print whatever's rendered here directly,
+    # unless it's a login/bot-check wall (pause once more for that first).
     reason = describe_manual_step_needed(page)
     if reason:
         print(f"needs {reason}")
@@ -436,6 +571,9 @@ def main():
     tracking_path = config["paths"]["tracking_csv"]
     downloads_dir = config["paths"]["downloads_dir"]
     os.makedirs(downloads_dir, exist_ok=True)
+    icon_cfg = config.get("download_icon", {})
+    icon_template_path = icon_cfg.get("template_image", "")
+    icon_match_threshold = icon_cfg.get("match_threshold", 0.8)
 
     tracking = load_tracking(tracking_path)
     pending = [row for row in tracking.values() if row["Status"] == "needs_proxy"]
@@ -480,7 +618,10 @@ def main():
             dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
 
             try:
-                succeeded = try_download_paper(p, page, context, row, target_urls, dest_path)
+                succeeded = try_download_paper(
+                    p, page, context, row, target_urls, dest_path,
+                    icon_template_path, icon_match_threshold,
+                )
             except Exception as e:
                 if "closed" in str(e).lower() or "closed" in type(e).__name__.lower():
                     print(f"browser window closed unexpectedly ({type(e).__name__}) — stopping here")

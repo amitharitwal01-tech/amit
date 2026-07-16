@@ -63,3 +63,14 @@ proxy:
   # EZproxy-style prefix that a publisher URL gets appended to. Only used
   # as a further fallback. Example: "https://ezproxy.youruniversity.edu/login?url="
   url_prefix: ""
+
+# Optional. If a page has a download icon with no visible text or
+# accessible label, Stage 2 can find it by its actual appearance instead.
+# Save a small, tightly-cropped screenshot of just that icon as it looks
+# on the real page (PNG) and point to it here. Leave blank to skip this
+# step (falls straight to print-to-PDF instead).
+download_icon:
+  template_image: ""
+  # How close a pixel match has to be (0-1). Lower catches more variation
+  # but risks clicking the wrong thing; raise it if it misfires.
+  match_threshold: 0.8
