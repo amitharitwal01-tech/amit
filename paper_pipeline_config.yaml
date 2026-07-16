@@ -24,12 +24,16 @@ network:
 # Stage 2 (proxy_download.py) settings. Password is never stored here —
 # you'll always be prompted for it at run time.
 login:
-  # Full URL of your institution's proxy/SSO login page.
+  # Full URL of your institution's proxy/SSO login page. Leave blank to
+  # just log in by hand in the browser window Stage 2 opens (recommended
+  # if you're using LibKey below — you'll land on a real article page
+  # with a normal institutional login link to click).
   proxy_login_url: ""
   # Leave blank to be prompted for your login ID each run.
   username: ""
-  # CSS selectors for the login form fields. Defaults match many EZproxy
-  # pages; if your institution's page is different, update these.
+  # CSS selectors for the login form fields, only used if proxy_login_url
+  # is set above. Defaults match many EZproxy pages; if your institution's
+  # page is different, update these.
   username_selector: "input[name='user']"
   password_selector: "input[name='pass']"
   submit_selector: "button[type='submit']"
@@ -37,10 +41,17 @@ login:
   # actually logged in (used to confirm login succeeded automatically).
   success_indicator: ""
 
+# If your institution uses LibKey (libkey.io / LibKey Nomad) for full-text
+# access, set your library ID here and the script will build a direct
+# https://libkey.io/libraries/<id>/<doi> link for each paper — this is
+# usually far more reliable than scraping the publisher's page. Find your
+# ID at https://libkey.io/choose-library, or from a libkey.io link you've
+# clicked before (it's the number right after "/libraries/").
+libkey:
+  library_id: "1899"
+
 proxy:
-  # EZproxy-style prefix that a publisher URL gets appended to.
-  # Example: "https://ezproxy.youruniversity.edu/login?url="
-  # Leave blank if your institution uses a different access method
-  # (e.g. Shibboleth/SSO) — the script will then rely on the login
-  # session already established in the browser.
+  # EZproxy-style prefix that a publisher URL gets appended to. Only used
+  # as a fallback when libkey.library_id above is blank or a paper has no
+  # DOI. Example: "https://ezproxy.youruniversity.edu/login?url="
   url_prefix: ""

@@ -102,9 +102,31 @@ def ensure_logged_in(page, login_cfg, username, password, fallback_url=None):
         )
 
 
-def build_target_url(source_url, proxy_cfg):
+def build_target_url(row, config):
+    doi = (row.get("DOI") or "").strip()
+    library_id = config.get("libkey", {}).get("library_id", "")
+    if library_id and doi:
+        return f"https://libkey.io/libraries/{library_id}/{doi}"
+
+    proxy_cfg = config.get("proxy", {})
     prefix = proxy_cfg.get("url_prefix", "")
+    source_url = row.get("Source_URL", "")
     return f"{prefix}{source_url}" if prefix else source_url
+
+
+def goto_and_capture_direct_download(page, url, dest_path, nav_timeout, download_wait_ms=5000):
+    # goto() runs to completion first (up to nav_timeout), then exiting the
+    # expect_download block waits up to download_wait_ms more for a download
+    # event — short, since it fires in sync with the response, not later.
+    # Any failure here (nav timeout, no download, bad URL) just means "not
+    # a direct download" — the caller falls back to scraping the page.
+    try:
+        with page.expect_download(timeout=download_wait_ms) as download_info:
+            page.goto(url, wait_until="domcontentloaded", timeout=nav_timeout)
+        download_info.value.save_as(dest_path)
+        return True
+    except Exception:
+        return False
 
 
 def find_pdf_url(page):
@@ -112,15 +134,18 @@ def find_pdf_url(page):
     if meta:
         content = meta.get_attribute("content")
         if content:
-            return content, "click"
+            return content
 
     for link in page.query_selector_all("a"):
         href = link.get_attribute("href") or ""
-        lowered = href.lower()
-        if any(hint in lowered for hint in PDF_LINK_HINTS):
-            return href, "link"
+        text = (link.inner_text() or "").lower()
+        if any(hint in href.lower() for hint in PDF_LINK_HINTS):
+            return href
+        if "pdf" in text and ("download" in text or "view" in text or "full text" in text):
+            if href:
+                return href
 
-    return None, None
+    return None
 
 
 def download_via_browser(context, page, pdf_url, dest_path):
@@ -161,11 +186,10 @@ def main():
     login_cfg = config.get("login", {})
     username, password = get_credentials(login_cfg)
 
-    proxy_cfg = config.get("proxy", {})
     downloaded_count = 0
     failed_count = 0
 
-    first_fallback_url = build_target_url(pending[0]["Source_URL"], proxy_cfg)
+    first_fallback_url = build_target_url(pending[0], config)
 
     with sync_playwright() as p:
         launch_kwargs = dict(headless=False, accept_downloads=True)
@@ -191,19 +215,21 @@ def main():
             title = row["Title"]
             print(f"[{i}/{len(pending)}] {title[:70]!r}", end=" ... ")
 
-            target_url = build_target_url(row["Source_URL"], proxy_cfg)
-            try:
-                page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
-            except PlaywrightTimeoutError:
-                row["Status"] = "manual_check_needed"
-                row["Notes"] = f"Timed out loading {target_url}"
+            target_url = build_target_url(row, config)
+            doi_part = row["DOI"].replace("/", "_") if row["DOI"] else sanitize_filename(title)
+            dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
+
+            if goto_and_capture_direct_download(page, target_url, dest_path, nav_timeout=20000):
+                row["Status"] = "downloaded_via_proxy"
+                row["PDF_Path"] = dest_path
+                row["Notes"] = ""
                 row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
-                failed_count += 1
-                print("timed out")
+                downloaded_count += 1
+                print("downloaded")
                 save_tracking(tracking_path, tracking)
                 continue
 
-            pdf_url, _ = find_pdf_url(page)
+            pdf_url = find_pdf_url(page)
             if not pdf_url:
                 row["Status"] = "manual_check_needed"
                 row["Notes"] = f"Could not locate a PDF link on {page.url}"
@@ -212,9 +238,6 @@ def main():
                 print("no PDF link found")
                 save_tracking(tracking_path, tracking)
                 continue
-
-            doi_part = row["DOI"].replace("/", "_") if row["DOI"] else sanitize_filename(title)
-            dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
 
             if download_via_browser(context, page, pdf_url, dest_path):
                 row["Status"] = "downloaded_via_proxy"
