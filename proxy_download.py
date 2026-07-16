@@ -214,34 +214,34 @@ def ensure_logged_in(page, login_cfg, username, password, fallback_url=None):
 
 
 def build_candidate_urls(row, config):
-    # Different access routes work for different papers/publishers, so try
-    # several in order rather than committing to just one: the deterministic
-    # proxy URL built from Stage 1's resolved publisher host (most
-    # reliable — no guessing at journal-imprint subdomains), then a generic
-    # doi.org-through-the-proxy URL, then LibKey, then older fallbacks.
     doi = (row.get("DOI") or "").strip()
     proxy_cfg = config.get("proxy", {})
     suffix = proxy_cfg.get("hostname_mangling_suffix", "")
     candidates = []
 
-    known_url = build_proxy_pdf_url(doi, row.get("Publisher_Host", ""), suffix)
-    if known_url:
-        candidates.append(known_url)
+    if suffix:
+        # Once a hostname-mangling proxy is configured, every candidate
+        # must stay on a proxied domain — the plain journal site is what
+        # trips the publisher's bot detection. No LibKey, no bare doi.org
+        # fallback here, even as a last resort.
+        known_url = build_proxy_pdf_url(doi, row.get("Publisher_Host", ""), suffix)
+        if known_url:
+            candidates.append(known_url)
 
-    doi_proxy_url = build_doi_proxy_url(doi, suffix)
-    if doi_proxy_url:
-        candidates.append(doi_proxy_url)
+        doi_proxy_url = build_doi_proxy_url(doi, suffix)
+        if doi_proxy_url:
+            candidates.append(doi_proxy_url)
+    else:
+        library_id = config.get("libkey", {}).get("library_id", "")
+        if library_id and doi:
+            candidates.append(f"https://libkey.io/libraries/{library_id}/{doi}")
 
-    library_id = config.get("libkey", {}).get("library_id", "")
-    if library_id and doi:
-        candidates.append(f"https://libkey.io/libraries/{library_id}/{doi}")
-
-    prefix = proxy_cfg.get("url_prefix", "")
-    source_url = row.get("Source_URL", "")
-    if prefix and source_url:
-        candidates.append(f"{prefix}{source_url}")
-    if source_url:
-        candidates.append(source_url)
+        prefix = proxy_cfg.get("url_prefix", "")
+        source_url = row.get("Source_URL", "")
+        if prefix and source_url:
+            candidates.append(f"{prefix}{source_url}")
+        if source_url:
+            candidates.append(source_url)
 
     seen = set()
     deduped = []
