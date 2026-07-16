@@ -5,7 +5,6 @@ stored on disk.
 """
 import csv
 import getpass
-import json
 import os
 import re
 import sys
@@ -19,26 +18,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from doi_resolver import CONFIG_PATH, TRACKING_FIELDS, sanitize_filename, load_config as _load_config
 
 PROFILE_DIR = os.path.join(os.getcwd(), "browser_profile")
-
-
-def ensure_pdf_downloads_not_inline(profile_dir):
-    # Makes Chrome always treat a PDF response as a real download instead
-    # of showing it in its built-in viewer — so page.expect_download()
-    # reliably fires (Playwright's own well-tested save mechanism)
-    # instead of needing to capture response bytes by hand.
-    prefs_path = os.path.join(profile_dir, "Default", "Preferences")
-    try:
-        os.makedirs(os.path.dirname(prefs_path), exist_ok=True)
-        prefs = {}
-        if os.path.exists(prefs_path):
-            with open(prefs_path, "r", encoding="utf-8") as f:
-                prefs = json.load(f)
-        prefs.setdefault("plugins", {})["always_open_pdf_externally"] = True
-        with open(prefs_path, "w", encoding="utf-8") as f:
-            json.dump(prefs, f)
-    except (OSError, json.JSONDecodeError):
-        pass
-
 
 # Substring match against whatever host we're on (plain or hostname-mangled
 # through a proxy — dots become dashes there, so both forms are checked).
@@ -287,31 +266,29 @@ def fetch_pdf_if_thats_what_this_url_is(context, url, dest_path, timeout=20000):
     return False
 
 
+def page_is_showing_pdf(page):
+    # When Chrome's built-in viewer is displaying a PDF (rather than an
+    # HTML page), the document itself reports this — no network
+    # interception needed to know what's on screen.
+    try:
+        return page.evaluate("document.contentType") == "application/pdf"
+    except Exception:
+        return False
+
+
+def print_displayed_pdf(page, dest_path):
+    # Only ever called when page_is_showing_pdf() is true: this exports
+    # the exact PDF Chrome is already correctly rendering, rather than
+    # an arbitrary webpage — faithful reproduction, not a "print this
+    # article page and hope" snapshot.
+    try:
+        page.pdf(path=dest_path)
+        return validate_saved_pdf(dest_path)
+    except Exception:
+        return False
+
+
 def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000):
-    # Chrome's built-in viewer renders PDFs inline instead of downloading
-    # them, so also listen for the raw navigation response and grab its
-    # body directly — this is the exact response the browser's real
-    # navigation already fetched (so it already got past anything, like
-    # Cloudflare, that only blocks non-browser-looking traffic). A
-    # *separate* re-fetch afterwards would be exactly that kind of
-    # traffic and can get blocked even when the original navigation
-    # didn't — confirmed by a case where the PDF rendered fine on screen
-    # but the re-fetch to save it failed.
-    captured = {"body": None}
-
-    def on_response(response):
-        if captured["body"] is not None:
-            return
-        try:
-            if not response.request.is_navigation_request():
-                return
-            if "pdf" not in response.headers.get("content-type", "").lower():
-                return
-            captured["body"] = response.body()
-        except Exception:
-            pass
-
-    page.on("response", on_response)
     try:
         with page.expect_download(timeout=download_wait_ms) as download_info:
             page.goto(url, wait_until="domcontentloaded", timeout=nav_timeout)
@@ -320,15 +297,15 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
             return True
     except Exception:
         pass
-    finally:
-        page.remove_listener("response", on_response)
 
-    if save_if_valid_pdf(captured["body"], dest_path):
+    # No "download" event doesn't mean no PDF — Chrome's built-in viewer
+    # renders PDFs inline instead. If that's what's on screen, export it
+    # directly rather than making a second network request for the same
+    # file (which can get blocked even when the original navigation that
+    # already fetched it successfully wasn't).
+    if page_is_showing_pdf(page) and print_displayed_pdf(page, dest_path):
         return True
 
-    # Last resort: a separate re-fetch, in case the above didn't apply
-    # (e.g. the PDF loaded via redirect rather than the tracked
-    # navigation response).
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
 
 
@@ -528,17 +505,19 @@ def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
             new_page.wait_for_load_state("domcontentloaded", timeout=8000)
         except Exception:
             pass
-        try:
-            resp = context.request.get(new_page.url)
-            if resp.ok and "pdf" in resp.headers.get("content-type", "").lower():
-                result["done"] = save_if_valid_pdf(resp.body(), dest_path)
-        except Exception:
-            pass
-        finally:
+        if page_is_showing_pdf(new_page):
+            result["done"] = print_displayed_pdf(new_page, dest_path)
+        if not result["done"]:
             try:
-                new_page.close()
+                resp = context.request.get(new_page.url)
+                if resp.ok and "pdf" in resp.headers.get("content-type", "").lower():
+                    result["done"] = save_if_valid_pdf(resp.body(), dest_path)
             except Exception:
                 pass
+        try:
+            new_page.close()
+        except Exception:
+            pass
 
     page.on("download", on_download)
     context.on("page", on_new_page)
@@ -695,8 +674,6 @@ def main():
 
     first_candidates = build_candidate_urls(pending[0], config)
     first_fallback_url = first_candidates[0] if first_candidates else ""
-
-    ensure_pdf_downloads_not_inline(PROFILE_DIR)
 
     with sync_playwright() as p:
         # Playwright's bundled Chromium, not your real installed Chrome —
