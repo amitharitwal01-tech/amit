@@ -187,6 +187,34 @@ def looks_like_login_page(page):
     return page.query_selector("input[type='password']") is not None
 
 
+def find_meta_pdf_url(page):
+    # The "citation_pdf_url" meta tag is a long-standing scholarly-metadata
+    # convention (used by Google Scholar, Zotero, etc.) that most major
+    # publisher platforms embed in <head> regardless of how their on-page
+    # download UI happens to be built that week.
+    meta = page.query_selector("meta[name='citation_pdf_url']")
+    if meta:
+        content = meta.get_attribute("content")
+        if content:
+            return content
+    return None
+
+
+def find_embedded_pdf_url(page):
+    # Some readers stream the PDF into an <embed>/<iframe> rather than
+    # exposing a clickable download link at all.
+    for selector in ("embed[type='application/pdf']", "embed[src*='.pdf']", "iframe[src*='.pdf']"):
+        el = page.query_selector(selector)
+        if el:
+            src = el.get_attribute("src")
+            if src:
+                return src
+    for frame in page.frames:
+        if frame.url and ".pdf" in frame.url.lower():
+            return frame.url
+    return None
+
+
 def find_download_element(page, timeout=15000):
     # wait_for_selector actively polls the DOM, so this covers pages like
     # LibKey's that render their download button client-side well after
@@ -284,6 +312,64 @@ def click_and_capture_download(page, context, element, dest_path, wait_seconds=1
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, timeout=8000)
 
 
+def try_download_paper(page, context, row, target_url, dest_path):
+    # Layer 1: LibKey/DOI-resolver URL might just serve the PDF directly.
+    if goto_and_capture_direct_download(page, context, target_url, dest_path, nav_timeout=25000):
+        return True
+
+    # Layer 2: known publisher platforms expose a stable DOI-based PDF URL.
+    guess_url = guess_publisher_pdf_url(page.url, row.get("DOI", ""))
+    if guess_url and guess_url != page.url:
+        if goto_and_capture_direct_download(page, context, guess_url, dest_path, nav_timeout=20000):
+            return True
+
+    # Layer 3: scholarly metadata embedded in <head>, if the page has it.
+    meta_url = find_meta_pdf_url(page)
+    if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
+        return True
+
+    # Layer 4: an embedded PDF viewer (<embed>/<iframe>) rather than a link.
+    embed_url = find_embedded_pdf_url(page)
+    if embed_url and fetch_pdf_if_thats_what_this_url_is(context, embed_url, dest_path):
+        return True
+
+    # Layer 5: hunt for and click an actual download control on the page.
+    el = find_download_element(page)
+
+    if el is None and looks_like_login_page(page):
+        print("needs a fresh login")
+        input(
+            "Please log in again in the browser window, then press Enter "
+            "here to continue..."
+        )
+        try:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+        except Exception:
+            pass
+        meta_url = find_meta_pdf_url(page)
+        if meta_url and fetch_pdf_if_thats_what_this_url_is(context, meta_url, dest_path):
+            return True
+        el = find_download_element(page)
+
+    if el is None:
+        return False
+
+    return click_and_capture_download(page, context, el, dest_path)
+
+
+def mark_downloaded(row, dest_path):
+    row["Status"] = "downloaded_via_proxy"
+    row["PDF_Path"] = dest_path
+    row["Notes"] = ""
+    row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
+
+
+def mark_manual_check(row, note):
+    row["Status"] = "manual_check_needed"
+    row["Notes"] = note
+    row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
+
+
 def main():
     config = load_config()
     tracking_path = config["paths"]["tracking_csv"]
@@ -334,64 +420,15 @@ def main():
             doi_part = row["DOI"].replace("/", "_") if row["DOI"] else sanitize_filename(title)
             dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
 
-            if goto_and_capture_direct_download(page, context, target_url, dest_path, nav_timeout=25000):
-                row["Status"] = "downloaded_via_proxy"
-                row["PDF_Path"] = dest_path
-                row["Notes"] = ""
-                row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
-                downloaded_count += 1
-                print("downloaded")
-                save_tracking(tracking_path, tracking)
-                continue
-
-            guess_url = guess_publisher_pdf_url(page.url, row.get("DOI", ""))
-            if guess_url and guess_url != page.url:
-                if goto_and_capture_direct_download(page, context, guess_url, dest_path, nav_timeout=20000):
-                    row["Status"] = "downloaded_via_proxy"
-                    row["PDF_Path"] = dest_path
-                    row["Notes"] = ""
-                    row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
-                    downloaded_count += 1
-                    print("downloaded")
-                    save_tracking(tracking_path, tracking)
-                    continue
-
-            el = find_download_element(page)
-
-            if el is None and looks_like_login_page(page):
-                print("needs a fresh login")
-                input(
-                    "Please log in again in the browser window, then press "
-                    "Enter here to continue..."
-                )
-                try:
-                    page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
-                except Exception:
-                    pass
-                el = find_download_element(page)
-
-            if el is None:
-                row["Status"] = "manual_check_needed"
-                row["Notes"] = f"Could not find a download button on {page.url}"
-                row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
-                failed_count += 1
-                print("no download button found")
-                save_tracking(tracking_path, tracking)
-                continue
-
-            if click_and_capture_download(page, context, el, dest_path):
-                row["Status"] = "downloaded_via_proxy"
-                row["PDF_Path"] = dest_path
-                row["Notes"] = ""
+            if try_download_paper(page, context, row, target_url, dest_path):
+                mark_downloaded(row, dest_path)
                 downloaded_count += 1
                 print("downloaded")
             else:
-                row["Status"] = "manual_check_needed"
-                row["Notes"] = f"Found a download button but the download didn't complete: {page.url}"
+                mark_manual_check(row, f"Could not find or trigger a download on {page.url}")
                 failed_count += 1
-                print("download failed")
+                print("no download button found")
 
-            row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
             save_tracking(tracking_path, tracking)
 
         context.close()
