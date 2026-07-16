@@ -244,9 +244,30 @@ def fetch_pdf_if_thats_what_this_url_is(context, url, dest_path, timeout=20000):
 
 
 def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000):
-    # goto() runs to completion first (up to nav_timeout), then exiting the
-    # expect_download block waits up to download_wait_ms more for a download
-    # event — short, since it fires in sync with the response, not later.
+    # Chrome's built-in viewer renders PDFs inline instead of downloading
+    # them, so also listen for the raw navigation response and grab its
+    # body directly — this is the exact response the browser's real
+    # navigation already fetched (so it already got past anything, like
+    # Cloudflare, that only blocks non-browser-looking traffic). A
+    # *separate* re-fetch afterwards would be exactly that kind of
+    # traffic and can get blocked even when the original navigation
+    # didn't — confirmed by a case where the PDF rendered fine on screen
+    # but the re-fetch to save it failed.
+    captured = {"body": None}
+
+    def on_response(response):
+        if captured["body"] is not None:
+            return
+        try:
+            if not response.request.is_navigation_request():
+                return
+            if "pdf" not in response.headers.get("content-type", "").lower():
+                return
+            captured["body"] = response.body()
+        except Exception:
+            pass
+
+    page.on("response", on_response)
     try:
         with page.expect_download(timeout=download_wait_ms) as download_info:
             page.goto(url, wait_until="domcontentloaded", timeout=nav_timeout)
@@ -254,11 +275,20 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
         return True
     except Exception:
         pass
+    finally:
+        page.remove_listener("response", on_response)
 
-    # No "download" event doesn't mean no PDF — Chrome's built-in viewer
-    # renders PDFs inline in the tab instead of downloading them. Whatever
-    # URL the page landed on, re-request it directly (same session cookies)
-    # and check if the response itself is actually a PDF.
+    if captured["body"] is not None:
+        try:
+            with open(dest_path, "wb") as f:
+                f.write(captured["body"])
+            return True
+        except OSError:
+            pass
+
+    # Last resort: a separate re-fetch, in case the above didn't apply
+    # (e.g. the PDF loaded via redirect rather than the tracked
+    # navigation response).
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
 
 
