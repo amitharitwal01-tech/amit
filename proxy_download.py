@@ -9,6 +9,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import yaml
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -25,6 +26,34 @@ DOWNLOAD_CONTROL_SELECTOR = (
     "a:has-text('View PDF'), button:has-text('View PDF'), "
     "a:has-text('Download'), button:has-text('Download')"
 )
+
+# Once we've landed on the actual publisher's domain (after LibKey/SSO),
+# most large publisher platforms expose a stable, DOI-based direct PDF
+# URL rather than requiring a button click. Trying these first is far
+# more reliable than hunting for whatever download UI that publisher
+# happens to render this week.
+PUBLISHER_PDF_URL_TEMPLATES = {
+    "onlinelibrary.wiley.com": "https://onlinelibrary.wiley.com/doi/pdf/{doi}",
+    "pubs.acs.org": "https://pubs.acs.org/doi/epdf/{doi}",
+    "science.org": "https://www.science.org/doi/epdf/{doi}",
+    "link.springer.com": "https://link.springer.com/content/pdf/{doi}.pdf",
+    "tandfonline.com": "https://www.tandfonline.com/doi/epdf/{doi}",
+    "pnas.org": "https://www.pnas.org/doi/epdf/{doi}",
+}
+
+
+def guess_publisher_pdf_url(current_url, doi):
+    host = urlparse(current_url).netloc.lower()
+
+    if "nature.com" in host and "/articles/" in current_url:
+        return current_url.split("?")[0].rstrip("/") + ".pdf"
+
+    if not doi:
+        return None
+    for domain, template in PUBLISHER_PDF_URL_TEMPLATES.items():
+        if domain in host:
+            return template.format(doi=doi)
+    return None
 
 
 def load_config():
@@ -263,6 +292,18 @@ def main():
                 print("downloaded")
                 save_tracking(tracking_path, tracking)
                 continue
+
+            guess_url = guess_publisher_pdf_url(page.url, row.get("DOI", ""))
+            if guess_url and guess_url != page.url:
+                if goto_and_capture_direct_download(page, guess_url, dest_path, nav_timeout=20000):
+                    row["Status"] = "downloaded_via_proxy"
+                    row["PDF_Path"] = dest_path
+                    row["Notes"] = ""
+                    row["Last_Updated"] = datetime.now(timezone.utc).isoformat()
+                    downloaded_count += 1
+                    print("downloaded")
+                    save_tracking(tracking_path, tracking)
+                    continue
 
             el = find_download_element(page)
 
