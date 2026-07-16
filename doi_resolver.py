@@ -8,7 +8,6 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -17,7 +16,7 @@ import yaml
 CONFIG_PATH = "paper_pipeline_config.yaml"
 TRACKING_FIELDS = [
     "Title", "Authors", "DOI", "Status", "PDF_Path",
-    "Source_URL", "Publisher_Host", "Notes", "Last_Updated",
+    "Source_URL", "Publisher_URL", "Notes", "Last_Updated",
 ]
 
 DOI_PREFIXES_TO_STRIP = (
@@ -106,21 +105,20 @@ def normalize_doi(raw):
     return doi.strip().strip(".,;: \t")
 
 
-def resolve_publisher_host(doi, session, timeout):
-    # Following https://doi.org/<doi> to its final redirect reveals which
-    # publisher domain (and which subdomain/imprint — Wiley in particular
-    # has dozens, e.g. advanced.onlinelibrary.wiley.com) actually hosts the
-    # article, without needing to log in: the redirect itself is public,
-    # only the content behind it is gated.
+def resolve_publisher_url(doi, session, timeout):
+    # Following https://doi.org/<doi> to its final redirect reveals the
+    # exact article URL (domain *and* path — Wiley in particular has
+    # dozens of journal-imprint subdomains, e.g.
+    # advanced.onlinelibrary.wiley.com) without needing to log in: the
+    # redirect itself is public, only the content behind it is gated.
+    # Streamed and closed immediately so we get the final URL without
+    # downloading the whole landing page body.
     try:
-        resp = session.head(
-            f"https://doi.org/{doi}", timeout=timeout, allow_redirects=True
+        resp = session.get(
+            f"https://doi.org/{doi}", timeout=timeout, allow_redirects=True, stream=True
         )
-        if resp.status_code >= 400 or not resp.url:
-            resp = session.get(
-                f"https://doi.org/{doi}", timeout=timeout, allow_redirects=True
-            )
-        return urlparse(resp.url).netloc
+        resp.close()
+        return resp.url or ""
     except requests.RequestException:
         return ""
 
@@ -232,7 +230,7 @@ def main():
             "Status": "",
             "PDF_Path": "",
             "Source_URL": "",
-            "Publisher_Host": "",
+            "Publisher_URL": "",
             "Notes": "",
             "Last_Updated": datetime.now(timezone.utc).isoformat(),
         }
@@ -246,7 +244,7 @@ def main():
             continue
 
         record["Source_URL"] = f"https://doi.org/{doi}"
-        record["Publisher_Host"] = resolve_publisher_host(doi, session, timeout)
+        record["Publisher_URL"] = resolve_publisher_url(doi, session, timeout)
         unpaywall_data = query_unpaywall(doi, email, session, timeout)
         pdf_url = best_oa_pdf_url(unpaywall_data)
 

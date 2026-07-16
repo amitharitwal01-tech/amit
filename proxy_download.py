@@ -90,7 +90,7 @@ def build_doi_proxy_url(doi, suffix):
 # DOI (network hiccup, etc.). CrossRef DOI prefixes are registered per
 # publisher, so the prefix alone is a reasonable guess — but it can't know
 # a specific journal imprint's subdomain (Wiley has dozens), which is why
-# Stage 1's resolved Publisher_Host is always tried first.
+# Stage 1's resolved Publisher_URL is always tried first.
 DOI_PREFIX_TO_FALLBACK_HOST = {
     "10.1021": "pubs.acs.org",
     "10.1002": "onlinelibrary.wiley.com",
@@ -224,7 +224,8 @@ def build_candidate_urls(row, config):
         # must stay on a proxied domain — the plain journal site is what
         # trips the publisher's bot detection. No LibKey, no bare doi.org
         # fallback here, even as a last resort.
-        known_url = build_proxy_pdf_url(doi, row.get("Publisher_Host", ""), suffix)
+        publisher_host = urlparse(row.get("Publisher_URL", "") or "").netloc
+        known_url = build_proxy_pdf_url(doi, publisher_host, suffix)
         if known_url:
             candidates.append(known_url)
 

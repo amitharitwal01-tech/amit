@@ -80,14 +80,17 @@ marked `needs_proxy`, and will ask for your login ID and password
 
 ## Tracking CSV columns
 
-`Title, Authors, DOI, Status, PDF_Path, Source_URL, Publisher_Host, Notes, Last_Updated`
+`Title, Authors, DOI, Status, PDF_Path, Source_URL, Publisher_URL, Notes, Last_Updated`
 
-`Publisher_Host` is the actual domain (e.g. `advanced.onlinelibrary.wiley.com`)
-that `https://doi.org/<doi>` redirected to — resolved by Stage 1, and what
-Stage 2 uses to build the proxy PDF URL directly. **If you're upgrading
-from an older run, re-run `python doi_resolver.py` once** so this column
-gets populated for existing rows — Stage 2 falls back to a rougher
-DOI-prefix guess when it's blank.
+`Publisher_URL` is the exact article URL (e.g.
+`https://advanced.onlinelibrary.wiley.com/doi/10.1002/adfm.75159`) that
+`https://doi.org/<doi>` redirected to — resolved by Stage 1 with a plain
+HTTP request (no login involved; only the *content* behind that URL is
+gated, not the redirect itself). Stage 2 uses its domain to build the
+proxy PDF URL directly. **If you're upgrading from an older run, re-run
+`python doi_resolver.py` once** so this column gets populated for
+existing rows — Stage 2 falls back to a rougher DOI-prefix guess when
+it's blank.
 
 Status values: `downloaded`, `downloaded_via_proxy`, `needs_proxy`,
 `manual_check_needed`, `no_doi_found`.
