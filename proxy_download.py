@@ -27,33 +27,74 @@ DOWNLOAD_CONTROL_SELECTOR = (
     "a:has-text('Download'), button:has-text('Download')"
 )
 
-# Once we've landed on the actual publisher's domain (after LibKey/SSO),
-# most large publisher platforms expose a stable, DOI-based direct PDF
-# URL rather than requiring a button click. Trying these first is far
-# more reliable than hunting for whatever download UI that publisher
-# happens to render this week.
-PUBLISHER_PDF_URL_TEMPLATES = {
-    "onlinelibrary.wiley.com": "https://onlinelibrary.wiley.com/doi/pdf/{doi}",
-    "pubs.acs.org": "https://pubs.acs.org/doi/epdf/{doi}",
-    "science.org": "https://www.science.org/doi/epdf/{doi}",
-    "link.springer.com": "https://link.springer.com/content/pdf/{doi}.pdf",
-    "tandfonline.com": "https://www.tandfonline.com/doi/epdf/{doi}",
-    "pnas.org": "https://www.pnas.org/doi/epdf/{doi}",
+# Once we've landed on the actual publisher's domain (after LibKey/SSO/a
+# hostname-mangling proxy), most large publisher platforms expose a stable,
+# DOI-based direct PDF path rather than requiring a button click. Paths
+# only (no domain) so this matches whatever host we're actually on —
+# including a proxied one like pubs-acs-org.bib-proxy.uhasselt.be.
+PUBLISHER_PDF_PATHS = {
+    "onlinelibrary.wiley.com": "/doi/pdf/{doi}",
+    "pubs.acs.org": "/doi/pdf/{doi}",
+    "science.org": "/doi/epdf/{doi}",
+    "link.springer.com": "/content/pdf/{doi}.pdf",
+    "tandfonline.com": "/doi/epdf/{doi}",
+    "pnas.org": "/doi/epdf/{doi}",
 }
 
 
 def guess_publisher_pdf_url(current_url, doi):
-    host = urlparse(current_url).netloc.lower()
+    parsed = urlparse(current_url)
+    host = parsed.netloc.lower()
 
-    if "nature.com" in host and "/articles/" in current_url:
+    if ("nature.com" in host or "nature-com" in host) and "/articles/" in current_url:
         return current_url.split("?")[0].rstrip("/") + ".pdf"
 
     if not doi:
         return None
-    for domain, template in PUBLISHER_PDF_URL_TEMPLATES.items():
-        if domain in host:
-            return template.format(doi=doi)
+    for domain, path_template in PUBLISHER_PDF_PATHS.items():
+        mangled_domain = domain.replace(".", "-")
+        if domain in host or mangled_domain in host:
+            return f"https://{parsed.netloc}{path_template.format(doi=doi)}"
     return None
+
+
+def apply_hostname_mangling_proxy(url, suffix):
+    # Rewrites e.g. https://pubs.acs.org/doi/pdf/<doi> into
+    # https://pubs-acs-org<suffix>/doi/pdf/<doi> — the URL scheme some
+    # institutional proxies use (dots in the hostname become dashes, then
+    # the proxy's own domain is appended) instead of a URL-prefix proxy.
+    parsed = urlparse(url)
+    mangled_host = parsed.netloc.replace(".", "-") + suffix
+    return parsed._replace(netloc=mangled_host).geturl()
+
+
+def build_doi_proxy_url(doi, suffix):
+    if not suffix or not doi:
+        return None
+    return f"https://doi-org{suffix}/{doi}"
+
+
+# CrossRef DOI prefixes are registered per publisher, so the prefix alone
+# usually identifies which platform a paper is on — no redirect needed.
+DOI_PREFIX_TO_DOMAIN = {
+    "10.1021": "pubs.acs.org",
+    "10.1002": "onlinelibrary.wiley.com",
+    "10.1126": "science.org",
+    "10.1007": "link.springer.com",
+    "10.1080": "tandfonline.com",
+    "10.1073": "pnas.org",
+}
+
+
+def build_known_publisher_proxy_url(doi, suffix):
+    if not doi or not suffix:
+        return None
+    domain = DOI_PREFIX_TO_DOMAIN.get(doi.split("/")[0])
+    path_template = PUBLISHER_PDF_PATHS.get(domain) if domain else None
+    if not path_template:
+        return None
+    plain_url = f"https://{domain}{path_template.format(doi=doi)}"
+    return apply_hostname_mangling_proxy(plain_url, suffix)
 
 
 def load_config():
@@ -140,16 +181,42 @@ def ensure_logged_in(page, login_cfg, username, password, fallback_url=None):
         )
 
 
-def build_target_url(row, config):
+def build_candidate_urls(row, config):
+    # Different access routes work for different papers/publishers, so try
+    # several in order rather than committing to just one: the hostname-
+    # mangling proxy (confirmed to actually work), then LibKey, then a
+    # URL-prefix proxy, then the plain DOI link as a last resort.
     doi = (row.get("DOI") or "").strip()
+    proxy_cfg = config.get("proxy", {})
+    suffix = proxy_cfg.get("hostname_mangling_suffix", "")
+    candidates = []
+
+    known_url = build_known_publisher_proxy_url(doi, suffix)
+    if known_url:
+        candidates.append(known_url)
+
+    doi_proxy_url = build_doi_proxy_url(doi, suffix)
+    if doi_proxy_url:
+        candidates.append(doi_proxy_url)
+
     library_id = config.get("libkey", {}).get("library_id", "")
     if library_id and doi:
-        return f"https://libkey.io/libraries/{library_id}/{doi}"
+        candidates.append(f"https://libkey.io/libraries/{library_id}/{doi}")
 
-    proxy_cfg = config.get("proxy", {})
     prefix = proxy_cfg.get("url_prefix", "")
     source_url = row.get("Source_URL", "")
-    return f"{prefix}{source_url}" if prefix else source_url
+    if prefix and source_url:
+        candidates.append(f"{prefix}{source_url}")
+    if source_url:
+        candidates.append(source_url)
+
+    seen = set()
+    deduped = []
+    for url in candidates:
+        if url and url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    return deduped
 
 
 def fetch_pdf_if_thats_what_this_url_is(context, url, dest_path, timeout=20000):
@@ -312,10 +379,14 @@ def click_and_capture_download(page, context, element, dest_path, wait_seconds=1
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, timeout=8000)
 
 
-def try_download_paper(page, context, row, target_url, dest_path):
-    # Layer 1: LibKey/DOI-resolver URL might just serve the PDF directly.
-    if goto_and_capture_direct_download(page, context, target_url, dest_path, nav_timeout=25000):
-        return True
+def try_download_paper(page, context, row, target_urls, dest_path):
+    # Layer 1: try each candidate entry point (proxy, LibKey, ...) in turn
+    # — one might serve the PDF directly even if another errors out.
+    for url in target_urls:
+        if goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout=25000):
+            return True
+
+    target_url = target_urls[0] if target_urls else ""
 
     # Layer 2: known publisher platforms expose a stable DOI-based PDF URL.
     guess_url = guess_publisher_pdf_url(page.url, row.get("DOI", ""))
@@ -390,7 +461,8 @@ def main():
     downloaded_count = 0
     failed_count = 0
 
-    first_fallback_url = build_target_url(pending[0], config)
+    first_candidates = build_candidate_urls(pending[0], config)
+    first_fallback_url = first_candidates[0] if first_candidates else ""
 
     with sync_playwright() as p:
         launch_kwargs = dict(headless=False, accept_downloads=True)
@@ -416,11 +488,11 @@ def main():
             title = row["Title"]
             print(f"[{i}/{len(pending)}] {title[:70]!r}", end=" ... ")
 
-            target_url = build_target_url(row, config)
+            target_urls = build_candidate_urls(row, config)
             doi_part = row["DOI"].replace("/", "_") if row["DOI"] else sanitize_filename(title)
             dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
 
-            if try_download_paper(page, context, row, target_url, dest_path):
+            if try_download_paper(page, context, row, target_urls, dest_path):
                 mark_downloaded(row, dest_path)
                 downloaded_count += 1
                 print("downloaded")

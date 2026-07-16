@@ -2,7 +2,7 @@
 # Edit the values below (keep the quotes). Use spaces for indentation, never Tab.
 
 # Required by the Unpaywall API — use a real email address of yours.
-unpaywall_email: "your_email@example.com"
+unpaywall_email: "amitharitwal14@gmail.com"
 
 paths:
   excel_input: "Trial_1.xlsx"
@@ -30,7 +30,7 @@ login:
   # with a normal institutional login link to click).
   proxy_login_url: ""
   # Leave blank to be prompted for your login ID each run.
-  username: ""
+  username: "amitkumar.harit@uhasselt.be"
   # CSS selectors for the login form fields, only used if proxy_login_url
   # is set above. Defaults match many EZproxy pages; if your institution's
   # page is different, update these.
@@ -51,7 +51,15 @@ libkey:
   library_id: "1899"
 
 proxy:
+  # Some institutions (Hasselt included) use a proxy that rewrites the
+  # publisher's hostname instead of using a URL prefix: dots become
+  # dashes and this suffix is appended, e.g. pubs.acs.org becomes
+  # pubs-acs-org.bib-proxy.uhasselt.be. When set, the script builds
+  # https://doi-org<suffix>/<doi> directly — this is tried before
+  # LibKey, since it's the access path confirmed to actually work.
+  # Leave blank if your institution doesn't use this scheme.
+  hostname_mangling_suffix: ".bib-proxy.uhasselt.be"
+
   # EZproxy-style prefix that a publisher URL gets appended to. Only used
-  # as a fallback when libkey.library_id above is blank or a paper has no
-  # DOI. Example: "https://ezproxy.youruniversity.edu/login?url="
+  # as a further fallback. Example: "https://ezproxy.youruniversity.edu/login?url="
   url_prefix: ""
