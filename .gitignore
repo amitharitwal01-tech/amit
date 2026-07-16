@@ -3,3 +3,4 @@ __pycache__/
 downloads/
 download_tracking.csv
 browser_profile/
+debug/

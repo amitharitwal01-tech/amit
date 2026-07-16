@@ -320,25 +320,46 @@ DOWNLOAD_NAME_PATTERN = re.compile(r"download|full[\s-]?text\s*pdf|view\s*pdf|\b
 # Confirmed from actual page markup: some readers (Wiley's included) put
 # the icon's label in a sibling tooltip span rather than an aria-label —
 # <button><svg>...</svg><span class="gsr-btn-tp ...">Download</span></button>
-# — invisible by default (CSS-hidden until hover), so the accessible-name
-# lookup below doesn't reliably catch it, but a direct CSS match does.
-KNOWN_MARKUP_SELECTORS = (
-    "button:has(span.gsr-btn-tp:text-is('Download'))",
-    "a:has(span.gsr-btn-tp:text-is('Download'))",
-    "[role='button']:has(span.gsr-btn-tp:text-is('Download'))",
+# — but that span may only exist in the DOM after hovering, and the icon
+# isn't necessarily wrapped in a real <button>/<a> (custom component kits
+# often use a styled <div> with a JS click handler instead). The SVG path
+# data itself is always present regardless of hover state or wrapper tag,
+# so match on that and walk up to whatever's actually clickable.
+KNOWN_ICON_PATH_PREFIXES = (
+    "M15.7 13.8V16.5H5.2V13.8H3.5V16.5C3.5 17.4",  # Wiley reader "Download" icon
 )
 
 
+def nearest_interactive_ancestor(locator):
+    ancestor = locator.locator(
+        "xpath=ancestor::*[self::button or self::a or @role='button' or @tabindex][1]"
+    )
+    try:
+        if ancestor.count() > 0:
+            return ancestor.first
+    except Exception:
+        pass
+    return locator.locator("xpath=..")
+
+
 def find_download_control_by_known_markup(page, timeout=4000):
-    for selector in KNOWN_MARKUP_SELECTORS:
+    for prefix in KNOWN_ICON_PATH_PREFIXES:
+        path_locator = page.locator(f"path[d^='{prefix}']")
         try:
-            locator = page.locator(selector)
-            if locator.count() == 0:
-                continue
-            locator.first.wait_for(state="attached", timeout=timeout)
-            return locator.first
+            if path_locator.count() > 0:
+                path_locator.first.wait_for(state="attached", timeout=timeout)
+                return nearest_interactive_ancestor(path_locator.first)
         except Exception:
             continue
+
+    span_locator = page.locator("span.gsr-btn-tp", has_text=re.compile(r"download", re.IGNORECASE))
+    try:
+        if span_locator.count() > 0:
+            span_locator.first.wait_for(state="attached", timeout=timeout)
+            return nearest_interactive_ancestor(span_locator.first)
+    except Exception:
+        pass
+
     return None
 
 
@@ -534,6 +555,20 @@ def try_download_paper(
     return False
 
 
+def save_debug_snapshot(page, doi, debug_dir="debug"):
+    # So a failed paper can be diagnosed from the saved files instead of
+    # another manual DevTools round-trip: what the page actually looked
+    # like, and its full HTML to grep for the real markup.
+    try:
+        os.makedirs(debug_dir, exist_ok=True)
+        base = sanitize_filename(doi.replace("/", "_")) if doi else "unknown"
+        page.screenshot(path=os.path.join(debug_dir, f"{base}.png"))
+        with open(os.path.join(debug_dir, f"{base}.html"), "w", encoding="utf-8") as f:
+            f.write(page.content())
+    except Exception:
+        pass
+
+
 def mark_downloaded(row, dest_path):
     row["Status"] = "downloaded_via_proxy"
     row["PDF_Path"] = dest_path
@@ -621,9 +656,10 @@ def main():
                 downloaded_count += 1
                 print("downloaded")
             else:
+                save_debug_snapshot(page, row.get("DOI", ""))
                 mark_manual_check(row, f"Could not find a download control on {page.url}")
                 failed_count += 1
-                print("no download control found")
+                print("no download control found (saved to debug/ for inspection)")
 
             save_tracking(tracking_path, tracking)
 
