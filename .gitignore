@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+downloads/
+download_tracking.csv
