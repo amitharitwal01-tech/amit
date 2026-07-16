@@ -440,7 +440,51 @@ def click_and_capture_download(page, context, element, dest_path, wait_seconds=1
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, timeout=8000)
 
 
-def try_download_paper(page, context, row, target_urls, dest_path):
+def print_page_to_pdf(playwright_instance, context, page, dest_path, min_bytes=50_000):
+    # Chromium's native print-to-PDF (same as Ctrl+P -> Save as PDF). A
+    # too-small result usually means we printed a login wall or an
+    # abstract-only page rather than the real article.
+    try:
+        page.pdf(path=dest_path)
+        if os.path.getsize(dest_path) >= min_bytes:
+            return True
+    except Exception:
+        pass
+
+    # Some Chrome builds only support print-to-PDF in headless mode, and
+    # this browser runs headed so you can watch/intervene. Fall back to a
+    # short-lived headless clone of the current session (same cookies)
+    # just to render this one page.
+    try:
+        cookies = context.cookies()
+    except Exception:
+        cookies = []
+
+    headless_browser = None
+    try:
+        headless_browser = playwright_instance.chromium.launch(headless=True)
+        headless_context = headless_browser.new_context()
+        if cookies:
+            headless_context.add_cookies(cookies)
+        temp_page = headless_context.new_page()
+        temp_page.goto(page.url, wait_until="domcontentloaded", timeout=20000)
+        temp_page.pdf(path=dest_path)
+    except Exception:
+        return False
+    finally:
+        if headless_browser is not None:
+            try:
+                headless_browser.close()
+            except Exception:
+                pass
+
+    try:
+        return os.path.getsize(dest_path) >= min_bytes
+    except OSError:
+        return False
+
+
+def try_download_paper(playwright_instance, page, context, row, target_urls, dest_path):
     # Layer 1: try each candidate entry point (proxy, LibKey, ...) in turn
     # — one might serve the PDF directly even if another errors out.
     for url in target_urls:
@@ -499,10 +543,19 @@ def try_download_paper(page, context, row, target_urls, dest_path):
                 return True
             el = find_download_element(page)
 
-    if el is None:
-        return False
+    if el is not None and click_and_capture_download(page, context, el, dest_path):
+        return True
 
-    return click_and_capture_download(page, context, el, dest_path)
+    # Layer 6: last resort — if the page is rendering real article content
+    # (not a login/bot-check wall), print it to PDF directly. Sidesteps
+    # hunting for a download control entirely; confirmed working on Wiley
+    # landing pages that render full text but hide the PDF behind a
+    # control this script can't reliably find.
+    if describe_manual_step_needed(page) is None:
+        if print_page_to_pdf(playwright_instance, context, page, dest_path):
+            return True
+
+    return False
 
 
 def mark_downloaded(row, dest_path):
@@ -569,7 +622,7 @@ def main():
             doi_part = row["DOI"].replace("/", "_") if row["DOI"] else sanitize_filename(title)
             dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
 
-            if try_download_paper(page, context, row, target_urls, dest_path):
+            if try_download_paper(p, page, context, row, target_urls, dest_path):
                 mark_downloaded(row, dest_path)
                 downloaded_count += 1
                 print("downloaded")
