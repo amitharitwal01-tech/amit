@@ -355,6 +355,23 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
 
 
+def try_meta_pdf_with_fulltext_referer(page, context, dest_path, playwright_instance=None):
+    # Some proxies (Wiley confirmed) reject a PDF request unless its
+    # referer is specifically the full-text HTML page — not just any
+    # page on the same site (the abstract page doesn't count) — so
+    # visit that first if it's given and different from where we are.
+    meta_url = find_meta_pdf_url(page)
+    if not meta_url:
+        return False
+    fulltext_url = find_meta_content(page, "citation_fulltext_html_url")
+    if fulltext_url and fulltext_url != page.url:
+        try:
+            page.goto(fulltext_url, wait_until="domcontentloaded", timeout=15000)
+        except Exception:
+            pass
+    return fetch_or_navigate_to_pdf(page, context, meta_url, dest_path, playwright_instance=playwright_instance)
+
+
 def fetch_or_navigate_to_pdf(page, context, url, dest_path, nav_timeout=20000, playwright_instance=None):
     # A raw background fetch (context.request) doesn't look like real
     # browser traffic and can get blocked by Cloudflare-style protection
@@ -403,17 +420,21 @@ def describe_manual_step_needed(page):
     return None
 
 
-def find_meta_pdf_url(page):
-    # The "citation_pdf_url" meta tag is a long-standing scholarly-metadata
-    # convention (used by Google Scholar, Zotero, etc.) that most major
-    # publisher platforms embed in <head> regardless of how their on-page
-    # download UI happens to be built that week.
-    meta = page.query_selector("meta[name='citation_pdf_url']")
+def find_meta_content(page, name):
+    meta = page.query_selector(f"meta[name='{name}']")
     if meta:
         content = meta.get_attribute("content")
         if content:
             return content
     return None
+
+
+def find_meta_pdf_url(page):
+    # The "citation_pdf_url" meta tag is a long-standing scholarly-metadata
+    # convention (used by Google Scholar, Zotero, etc.) that most major
+    # publisher platforms embed in <head> regardless of how their on-page
+    # download UI happens to be built that week.
+    return find_meta_content(page, "citation_pdf_url")
 
 
 def find_embedded_pdf_url(page):
@@ -628,10 +649,7 @@ def try_download_paper(
             return True
 
     # Layer 2: scholarly metadata embedded in <head>, if the page has it.
-    # Tries a background fetch first, falls back to a real navigation
-    # (survives Cloudflare-style blocks on the lightweight fetch).
-    meta_url = find_meta_pdf_url(page)
-    if meta_url and fetch_or_navigate_to_pdf(page, context, meta_url, dest_path, playwright_instance=playwright_instance):
+    if try_meta_pdf_with_fulltext_referer(page, context, dest_path, playwright_instance=playwright_instance):
         return True
 
     # Layer 3: an embedded PDF viewer (<embed>/<iframe>) rather than a link.
@@ -684,8 +702,7 @@ def try_download_paper(
             page.wait_for_load_state("domcontentloaded", timeout=15000)
         except Exception:
             pass
-        meta_url = find_meta_pdf_url(page)
-        if meta_url and fetch_or_navigate_to_pdf(page, context, meta_url, dest_path, playwright_instance=playwright_instance):
+        if try_meta_pdf_with_fulltext_referer(page, context, dest_path, playwright_instance=playwright_instance):
             return True
 
     return False
