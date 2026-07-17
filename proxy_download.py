@@ -456,57 +456,88 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
     # fired well after this navigation settles.
     wait_for_pdf_body = start_pdf_response_capture(page)
 
-    url_before_nav = page.url
+    # A navigation that turns into a file download can start *after* a
+    # short expect_download window has already closed — the proxy's
+    # redirect chain alone can take longer than that, and the bytes were
+    # then silently discarded (confirmed on a real run). So the download
+    # listener stays alive for this entire attempt, and its result is
+    # re-checked at every stage rather than in one early window.
+    download_result = {"saved": False}
 
-    try:
-        with page.expect_download(timeout=download_wait_ms) as download_info:
-            do_navigate()
-        download_info.value.save_as(dest_path)
-        if validate_saved_pdf(dest_path):
-            return True
-    except Exception:
-        pass
-
-    navigation_moved = page.url != url_before_nav
-
-    # Don't wait for the reader page's own JS to fetch the PDF — in an
-    # automated browser it often never does (its Cloudflare check can
-    # quietly fail, and then nothing fires). Make the exact same
-    # internal request ourselves, to the pdfdirect endpoint derived
-    # from where we landed.
-    if navigation_moved and fetch_pdf_via_inpage_request(page, direct_pdf_url_variants(page.url), dest_path):
-        return True
-
-    # Backstop: the passive listener may have caught the page doing the
-    # fetch itself while the attempts above were running.
-    body = wait_for_pdf_body(5000)
-    if body and save_if_valid_pdf(body, dest_path):
-        return True
-
-    # Still nothing — maybe Chrome's built-in viewer took over the
-    # document instead (a direct PDF URL, not a reader page). If so,
-    # click its own download button (a real click, same expect_download
-    # pattern as above) rather than making a second network request for
-    # the same file (which can get blocked even when the original
-    # navigation that already fetched it successfully wasn't).
-    if page_is_showing_pdf(page):
+    def on_download(download):
+        if download_result["saved"]:
+            return
         try:
-            with page.expect_download(timeout=download_wait_ms) as download_info:
-                if not click_chrome_pdf_viewer_download_button(page):
-                    raise RuntimeError("no viewer download button found")
-            download_info.value.save_as(dest_path)
-            if validate_saved_pdf(dest_path):
-                return True
+            download.save_as(dest_path)
+            download_result["saved"] = validate_saved_pdf(dest_path)
         except Exception:
             pass
 
-    # Only re-fetch the current URL if this navigation actually moved
-    # the page. If it silently failed, page.url is still the *previous*
-    # paper's page — fetching it here is how a wrong file once got
-    # downloaded and (correctly) rejected by the title check.
-    if not navigation_moved:
-        return False
-    return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
+    def download_landed(extra_wait_ms=0):
+        deadline = time.time() + extra_wait_ms / 1000
+        while not download_result["saved"] and time.time() < deadline:
+            try:
+                page.wait_for_timeout(200)
+            except Exception:
+                break
+        return download_result["saved"]
+
+    page.on("download", on_download)
+    url_before_nav = page.url
+    try:
+        try:
+            do_navigate()
+        except Exception:
+            pass
+
+        if download_landed(download_wait_ms):
+            return True
+
+        navigation_moved = page.url != url_before_nav
+
+        # Don't wait for the reader page's own JS to fetch the PDF — in
+        # an automated browser it often never does (its Cloudflare check
+        # can quietly fail, and then nothing fires). Make the exact same
+        # internal request ourselves, to the pdfdirect endpoint derived
+        # from where we landed.
+        if navigation_moved and fetch_pdf_via_inpage_request(page, direct_pdf_url_variants(page.url), dest_path):
+            return True
+
+        # Backstop: the passive listener may have caught the page doing
+        # the fetch itself while the attempts above were running.
+        body = wait_for_pdf_body(5000)
+        if body and save_if_valid_pdf(body, dest_path):
+            return True
+
+        # ~15s have passed since navigating — one more look for a
+        # download that started late.
+        if download_landed():
+            return True
+
+        # Still nothing — maybe Chrome's built-in viewer took over the
+        # document instead (a direct PDF URL, not a reader page). If so,
+        # click its own download button — the persistent listener will
+        # catch what it saves — rather than making a second network
+        # request for the same file (which can get blocked even when the
+        # original navigation that already fetched it successfully
+        # wasn't).
+        if page_is_showing_pdf(page):
+            if click_chrome_pdf_viewer_download_button(page) and download_landed(8000):
+                return True
+
+        # Only re-fetch the current URL if this navigation actually
+        # moved the page. If it silently failed, page.url is still the
+        # *previous* paper's page — fetching it here is how a wrong file
+        # once got downloaded and (correctly) rejected by the title
+        # check.
+        if not navigation_moved:
+            return False
+        return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
+    finally:
+        try:
+            page.remove_listener("download", on_download)
+        except Exception:
+            pass
 
 
 def try_meta_pdf_with_fulltext_referer(page, context, dest_path):

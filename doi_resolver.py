@@ -102,7 +102,13 @@ def normalize_doi(raw):
         if doi.lower().startswith(prefix):
             doi = doi[len(prefix):]
             break
-    return doi.strip().strip(".,;: \t")
+    doi = doi.strip().strip(".,;: \t")
+    # A trailing .s001/.s002/... marks a CrossRef *component* DOI — the
+    # Supporting Information file, not the paper (ACS especially). It
+    # resolves straight to the SI PDF, so a pipeline fed one downloads
+    # the supplement thinking it's the article. Always aim at the main
+    # article's DOI instead.
+    return re.sub(r"\.s\d{3}$", "", doi, flags=re.IGNORECASE)
 
 
 def resolve_publisher_url(doi, session, timeout):
@@ -212,10 +218,19 @@ def main():
         authors = str(row[authors_col]).strip() if authors_col else ""
         existing_doi = normalize_doi(row[doi_col]) if doi_col else ""
 
-        if title in tracking and tracking[title]["Status"] == "downloaded":
-            print(f"[{i + 1}/{total}] {title[:70]!r} — already downloaded, skipping")
-            downloaded_count += 1
-            continue
+        tracked = tracking.get(title)
+        if tracked and tracked["Status"] in ("downloaded", "downloaded_via_proxy"):
+            # Skip papers already downloaded (by either stage) — but only
+            # if the DOI we'd use now matches the one that download was
+            # actually for. A DOI that normalization now corrects (e.g. a
+            # supplementary .s001 component stripped to the article's own
+            # DOI) means the saved file was the wrong document, so that
+            # paper goes through the pipeline again.
+            doi_now = existing_doi or normalize_doi(tracked.get("DOI", ""))
+            if doi_now == tracked.get("DOI", ""):
+                print(f"[{i + 1}/{total}] {title[:70]!r} — already downloaded, skipping")
+                downloaded_count += 1
+                continue
 
         print(f"[{i + 1}/{total}] {title[:70]!r}", end=" ... ")
 
