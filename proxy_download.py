@@ -86,13 +86,13 @@ def build_proxy_pdf_url(doi, publisher_host, suffix):
         slug = doi.split("/", 1)[1]
         return apply_hostname_mangling_proxy(f"https://www.nature.com/articles/{slug}.pdf", suffix)
 
-    # Wiley: confirmed via the page's own citation_pdf_url meta tag that
-    # the PDF always lives at the bare onlinelibrary.wiley.com domain,
-    # regardless of which journal-imprint subdomain (advanced.,
-    # chemistry-europe., etc.) the article page itself uses.
-    if doi_prefix == "10.1002":
-        return apply_hostname_mangling_proxy(f"https://onlinelibrary.wiley.com/doi/pdf/{doi}", suffix)
-
+    # Wiley: the citation_pdf_url meta tag on some articles points at the
+    # bare onlinelibrary.wiley.com domain, but that's not reliable across
+    # journal imprints — confirmed directly (a manually-saved, valid PDF)
+    # that a specific paper needed its actual advanced.onlinelibrary...
+    # subdomain instead. Stage 1's resolved Publisher_URL host is the
+    # real per-paper source of truth here, same as every other publisher
+    # below — no Wiley-specific override.
     host = publisher_host or DOI_PREFIX_TO_FALLBACK_HOST.get(doi_prefix, "")
     if not host:
         return None
@@ -699,8 +699,14 @@ def try_download_paper(
             page.wait_for_load_state("domcontentloaded", timeout=15000)
         except Exception:
             pass
-        if goto_and_capture_direct_download(page, context, page.url, dest_path, nav_timeout=15000):
-            return True
+        # The login/SSO callback usually redirects to a "safe" landing
+        # page rather than preserving the exact PDF URL originally
+        # requested — retry the real candidates now that login is
+        # established, not just whatever page the callback landed on.
+        for url in target_urls:
+            if goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout=20000, referer=referer):
+                return True
+            referer = page.url
 
     # Layer 2: scholarly metadata embedded in <head>, if the page has it.
     if try_meta_pdf_with_fulltext_referer(page, context, dest_path):
