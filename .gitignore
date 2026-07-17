@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 downloads/
 download_tracking.csv
+download_tracking.xlsx
 browser_profile/
 debug/

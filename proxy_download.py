@@ -16,7 +16,15 @@ from urllib.parse import urlparse
 import yaml
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-from doi_resolver import CONFIG_PATH, TRACKING_FIELDS, sanitize_filename, load_config as _load_config
+from doi_resolver import (
+    CONFIG_PATH,
+    TRACKING_FIELDS,
+    build_pdf_filename,
+    extract_pdf_contact_info,
+    sanitize_filename,
+    save_tracking,
+    load_config as _load_config,
+)
 
 PROFILE_DIR = os.path.join(os.getcwd(), "browser_profile")
 
@@ -122,14 +130,6 @@ def load_tracking(tracking_path):
         for row in csv.DictReader(f):
             rows[row["Title"]] = row
     return rows
-
-
-def save_tracking(tracking_path, rows):
-    with open(tracking_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=TRACKING_FIELDS)
-        writer.writeheader()
-        for row in rows.values():
-            writer.writerow(row)
 
 
 def get_credentials(login_cfg):
@@ -1067,8 +1067,10 @@ def main():
             print(f"[{i}/{len(pending)}] {title[:70]!r}", end=" ... ")
 
             target_urls = build_candidate_urls(row, config)
-            doi_part = row["DOI"].replace("/", "_") if row["DOI"] else sanitize_filename(title)
-            dest_path = os.path.join(downloads_dir, sanitize_filename(doi_part) + ".pdf")
+            dest_path = os.path.join(
+                downloads_dir,
+                build_pdf_filename(row.get("Entry", ""), row.get("Year", ""), title, row.get("DOI", "")),
+            )
 
             try:
                 succeeded = try_download_paper(
@@ -1111,6 +1113,18 @@ def main():
                 mark_manual_check(row, f"Could not find a download control on {page.url}")
                 failed_count += 1
                 print("no download control found (saved to debug/ for inspection)")
+
+            if succeeded and not row.get("Corresponding_Email"):
+                author_entries = [
+                    a.strip() for a in re.split(r"[;,]", row.get("Authors") or "") if a.strip()
+                ]
+                c_name, c_emails, c_institute = extract_pdf_contact_info(dest_path, author_entries)
+                if c_name and not row.get("Corresponding_Author"):
+                    row["Corresponding_Author"] = c_name
+                if c_emails:
+                    row["Corresponding_Email"] = c_emails
+                if c_institute and not row.get("Institute"):
+                    row["Institute"] = c_institute
 
             save_tracking(tracking_path, tracking)
 
