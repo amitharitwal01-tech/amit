@@ -1,7 +1,7 @@
 """Stage 2: for papers Stage 1 couldn't fetch openly, log in through your
 university's proxy/SSO and download them using your own institutional
-access. You'll be prompted for your credentials each run — nothing is
-stored on disk.
+access. Credentials are read from login_credentials.txt if it exists
+(kept out of git via .gitignore); otherwise you're prompted each run.
 """
 import base64
 import csv
@@ -132,9 +132,46 @@ def load_tracking(tracking_path):
     return rows
 
 
+CREDENTIALS_PATH = "login_credentials.txt"
+
+
+def read_credentials_file(path=CREDENTIALS_PATH):
+    # Accepts "ID: someone@uni.be" / "PW: secret" lines (labels are
+    # case-insensitive; username/password/login/pass also work), or
+    # simply the ID on the first line and the password on the second.
+    if not os.path.exists(path):
+        return "", ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except OSError:
+        return "", ""
+
+    username = password = ""
+    unlabeled = []
+    for line in lines:
+        key, sep, value = line.partition(":")
+        key, value = key.strip().lower(), value.strip()
+        if sep and key in ("id", "username", "user", "login") and value:
+            username = value
+        elif sep and key in ("pw", "password", "pass") and value:
+            password = value
+        elif not sep:
+            unlabeled.append(line)
+    if not username and unlabeled:
+        username = unlabeled[0]
+    if not password and len(unlabeled) >= 2:
+        password = unlabeled[1]
+    return username, password
+
+
 def get_credentials(login_cfg):
-    username = login_cfg.get("username") or input("University login ID: ").strip()
-    password = getpass.getpass("Password (hidden as you type): ")
+    file_user, file_pass = read_credentials_file()
+    if file_user and file_pass:
+        print(f"Using login details from {CREDENTIALS_PATH}.")
+        return file_user, file_pass
+    username = file_user or login_cfg.get("username") or input("University login ID: ").strip()
+    password = file_pass or getpass.getpass("Password (hidden as you type): ")
     return username, password
 
 

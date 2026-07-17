@@ -4,4 +4,5 @@ downloads/
 download_tracking.csv
 download_tracking.xlsx
 browser_profile/
+login_credentials.txt
 debug/
