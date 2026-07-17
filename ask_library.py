@@ -7,14 +7,19 @@ papers only, every claim carries a citation like [Entry 3, p.5], and
 the parts are assembled into one answer saved as a Markdown file in
 answers/.
 
-Two modes, chosen automatically:
-- If Ollama is running (free local AI, https://ollama.com — install it,
-  then `ollama pull qwen2.5:7b`), sub-questions get written answers,
-  grounded in and cited to the retrieved passages. Sentences the model
-  produced without a citation are flagged for you to verify.
-- Without Ollama: retrieval-only — the same sub-questions, each
-  answered with the most relevant verbatim passages. Nothing is ever
-  invented in this mode by construction.
+The answering AI is found automatically, in this order:
+- Ollama, if it's running (free local AI, https://ollama.com).
+- llama-cpp-python, if installed — a pip-only local AI for machines
+  where installing programs isn't allowed:
+      pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+  First use downloads the model once (~4.7 GB), then it runs offline.
+- Neither: retrieval-only — the same sub-questions, each answered with
+  the most relevant verbatim passages. Nothing is ever invented in
+  this mode by construction.
+
+With either AI, written answers are grounded in and cited to the
+retrieved passages, and sentences produced without a citation are
+flagged for you to verify rather than silently trusted.
 
 Usage:
     python ask_library.py "your question or whole paragraph here"
@@ -54,39 +59,89 @@ ANSWER_SYSTEM = (
 )
 
 
-def assistant_config(config):
-    cfg = config.get("assistant", {}) or {}
-    return {
-        "url": cfg.get("ollama_url", DEFAULT_OLLAMA_URL),
-        "model": cfg.get("ollama_model", DEFAULT_OLLAMA_MODEL),
-    }
+DEFAULT_GGUF_REPO = "Qwen/Qwen2.5-7B-Instruct-GGUF"
+DEFAULT_GGUF_FILE = "*q4_k_m.gguf"
 
 
-def ollama_available(url):
-    try:
-        return requests.get(f"{url}/api/tags", timeout=3).ok
-    except requests.RequestException:
-        return False
+class OllamaLLM:
+    def __init__(self, url, model):
+        self.url = url
+        self.model = model
+        self.name = f"{model} via Ollama"
+
+    def chat(self, system, prompt, timeout=900):
+        resp = requests.post(
+            f"{self.url}/api/chat",
+            json={
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                "stream": False,
+                # Low temperature: this is grounded synthesis, not
+                # creative writing — we want the passages' content,
+                # tightly phrased.
+                "options": {"temperature": 0.2},
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]["content"].strip()
 
 
-def ollama_chat(url, model, system, prompt, timeout=900):
-    resp = requests.post(
-        f"{url}/api/chat",
-        json={
-            "model": model,
-            "messages": [
+class LlamaCppLLM:
+    # Same local-AI idea as Ollama, but delivered as a plain pip
+    # package — for machines where installing programs isn't allowed.
+    # The model file comes from HuggingFace through the same download
+    # mechanism the embedding models already use, and is cached locally.
+    def __init__(self, repo, filename):
+        from llama_cpp import Llama
+        print(
+            "Loading the local AI model (first ever use downloads it once, "
+            "~4.7 GB — after that it starts from disk)..."
+        )
+        self.llm = Llama.from_pretrained(
+            repo_id=repo, filename=filename,
+            n_ctx=8192, verbose=False,
+        )
+        self.name = f"{repo.split('/')[-1]} via llama-cpp-python"
+
+    def chat(self, system, prompt, timeout=None):
+        out = self.llm.create_chat_completion(
+            messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "stream": False,
-            # Low temperature: this is grounded synthesis, not creative
-            # writing — we want the passages' content, tightly phrased.
-            "options": {"temperature": 0.2},
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    return resp.json()["message"]["content"].strip()
+            temperature=0.2,
+            max_tokens=1200,
+        )
+        return out["choices"][0]["message"]["content"].strip()
+
+
+def make_llm(config):
+    # Returns the first working AI backend, or None (verbatim mode).
+    cfg = config.get("assistant", {}) or {}
+    url = cfg.get("ollama_url", DEFAULT_OLLAMA_URL)
+    model = cfg.get("ollama_model", DEFAULT_OLLAMA_MODEL)
+    try:
+        if requests.get(f"{url}/api/tags", timeout=3).ok:
+            return OllamaLLM(url, model)
+    except requests.RequestException:
+        pass
+
+    try:
+        import llama_cpp  # noqa: F401 — presence check before the heavy load
+    except ImportError:
+        return None
+    try:
+        return LlamaCppLLM(
+            cfg.get("gguf_repo", DEFAULT_GGUF_REPO),
+            cfg.get("gguf_file", DEFAULT_GGUF_FILE),
+        )
+    except Exception as e:
+        print(f"(couldn't load the llama-cpp model: {type(e).__name__}: {e})")
+        return None
 
 
 def split_into_subquestions(question):
@@ -108,10 +163,10 @@ def split_into_subquestions(question):
     return cleaned[:8] or [question.strip()[:300]]
 
 
-def decompose_question(question, ollama):
-    if ollama:
+def decompose_question(question, llm):
+    if llm:
         try:
-            output = ollama_chat(ollama["url"], ollama["model"], DECOMPOSE_SYSTEM, question, timeout=300)
+            output = llm.chat(DECOMPOSE_SYSTEM, question, timeout=300)
             subs = [
                 line.strip(" \t-•*0123456789.").strip()
                 for line in output.splitlines()
@@ -194,20 +249,21 @@ def main():
         sys.exit("The library index is empty — run  python build_index.py  first.")
     embedder = build_index.get_embedder()
 
-    ollama = None
+    llm = None
     if not args.no_ai:
-        candidate = assistant_config(config)
-        if ollama_available(candidate["url"]):
-            ollama = candidate
-            print(f"Local AI: {ollama['model']} via Ollama.")
+        llm = make_llm(config)
+        if llm:
+            print(f"Local AI: {llm.name}.")
         else:
             print(
-                "Ollama isn't running — answers will be verbatim passages only.\n"
-                "(For written answers: install https://ollama.com, run "
-                f"`ollama pull {DEFAULT_OLLAMA_MODEL}`, and try again.)"
+                "No local AI found — answers will be verbatim passages only.\n"
+                "For written answers, either run Ollama (https://ollama.com), or —\n"
+                "if you can't install programs — install the pip-only backend:\n"
+                "  pip install llama-cpp-python --extra-index-url "
+                "https://abetlen.github.io/llama-cpp-python/whl/cpu"
             )
 
-    subs = decompose_question(question, ollama)
+    subs = decompose_question(question, llm)
     print(f"\nDetected {len(subs)} sub-question(s):")
     for i, sub in enumerate(subs, 1):
         print(f"  {i}. {sub[:100]}{'...' if len(sub) > 100 else ''}")
@@ -221,10 +277,10 @@ def main():
             sections.append((sub, "_No relevant passages found in the library._", []))
             continue
 
-        if ollama:
+        if llm:
             prompt = f"Sub-question: {sub}\n\nSource passages:\n\n{format_passages(results)}"
             try:
-                body = ollama_chat(ollama["url"], ollama["model"], ANSWER_SYSTEM, prompt)
+                body = llm.chat(ANSWER_SYSTEM, prompt)
             except Exception as e:
                 print(f"  local AI failed on this part ({e}) — falling back to verbatim passages")
                 body = verbatim_answer(results)
