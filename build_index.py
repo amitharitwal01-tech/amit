@@ -498,16 +498,18 @@ def run_match_figure(image_path, top_k=5):
 def main():
     parser = argparse.ArgumentParser(description="Build/search the local paper index.")
     parser.add_argument("--rebuild", action="store_true", help="re-index everything from scratch")
-    parser.add_argument("--search", metavar="QUERY", help="show the best-matching passages for a question")
-    parser.add_argument("--find-figure", metavar="QUERY", help="find figures by describing what they show")
+    # nargs="+" lets the question be typed with or without quotes —
+    # every word after the flag belongs to the query.
+    parser.add_argument("--search", metavar="QUERY", nargs="+", help="show the best-matching passages for a question")
+    parser.add_argument("--find-figure", metavar="QUERY", nargs="+", help="find figures by describing what they show")
     parser.add_argument("--match-figure", metavar="IMAGE", help="find stored figures visually similar to an image file")
     parser.add_argument("--top", type=int, default=5, help="how many results the search modes show")
     args = parser.parse_args()
 
     if args.search:
-        run_search(args.search, args.top)
+        run_search(" ".join(args.search), args.top)
     elif args.find_figure:
-        run_search(args.find_figure, args.top, kind="figure")
+        run_search(" ".join(args.find_figure), args.top, kind="figure")
     elif args.match_figure:
         run_match_figure(args.match_figure, args.top)
     else:
