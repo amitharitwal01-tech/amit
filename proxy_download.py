@@ -280,49 +280,24 @@ def page_is_showing_pdf(page, timeout_ms=8000):
         return False
 
 
-def print_displayed_pdf(page, context, playwright_instance, dest_path):
-    # Only ever called when page_is_showing_pdf() is true: this exports
-    # the exact PDF Chrome is already correctly rendering (Chrome's own
-    # download icon here is part of its native viewer UI, not the page
-    # DOM — nothing to click; exporting is the only way to grab it).
-    try:
-        page.pdf(path=dest_path)
-        if validate_saved_pdf(dest_path):
-            return True
-    except Exception:
-        pass
-
-    # Chrome's automated print-to-PDF has historically only worked
-    # reliably in headless mode, and this browser runs headed on purpose
-    # (so you can log in / clear bot-checks). Fall back to a short-lived
-    # headless clone of this session (same cookies) just to export this
-    # one already-confirmed PDF.
-    if playwright_instance is None:
-        return False
-    try:
-        cookies = context.cookies()
-    except Exception:
-        cookies = []
-
-    headless_browser = None
-    try:
-        headless_browser = playwright_instance.chromium.launch(headless=True)
-        headless_context = headless_browser.new_context()
-        if cookies:
-            headless_context.add_cookies(cookies)
-        temp_page = headless_context.new_page()
-        temp_page.goto(page.url, wait_until="domcontentloaded", timeout=20000)
-        temp_page.pdf(path=dest_path)
-    except Exception:
-        return False
-    finally:
-        if headless_browser is not None:
-            try:
-                headless_browser.close()
-            except Exception:
-                pass
-
-    return validate_saved_pdf(dest_path)
+def click_chrome_pdf_viewer_download_button(page, timeout=5000):
+    # Chrome's built-in PDF viewer toolbar (the icon circled in the
+    # user's screenshot) is a real button, just deeply nested in the
+    # viewer's shadow DOM — not something page.pdf() can export (it
+    # doesn't participate in normal page printing at all, confirmed by
+    # it showing a "use the Print button on the toolbar" placeholder
+    # instead of the document). Playwright's selectors pierce open
+    # shadow roots automatically, so a plain CSS selector reaches it
+    # without needing special syntax.
+    for selector in ("pdf-viewer #download", "viewer-pdf-toolbar #download", "#download", "[aria-label='Download' i]"):
+        try:
+            locator = page.locator(selector)
+            if locator.count() > 0:
+                locator.first.click(timeout=timeout)
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def navigate_via_real_click(page, url, timeout):
@@ -352,7 +327,7 @@ def navigate_via_real_click(page, url, timeout):
     page.wait_for_load_state("domcontentloaded", timeout=timeout)
 
 
-def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000, referer=None, playwright_instance=None):
+def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000, referer=None):
     def do_navigate():
         try:
             navigate_via_real_click(page, url, nav_timeout)
@@ -376,17 +351,26 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
         pass
 
     # No "download" event doesn't mean no PDF — Chrome's built-in viewer
-    # renders PDFs inline instead. If that's what's on screen, export it
-    # directly rather than making a second network request for the same
+    # renders PDFs inline instead. If that's what's on screen, click its
+    # own download button (a real click, same expect_download pattern as
+    # above) rather than making a second network request for the same
     # file (which can get blocked even when the original navigation that
     # already fetched it successfully wasn't).
-    if page_is_showing_pdf(page) and print_displayed_pdf(page, context, playwright_instance, dest_path):
-        return True
+    if page_is_showing_pdf(page):
+        try:
+            with page.expect_download(timeout=download_wait_ms) as download_info:
+                if not click_chrome_pdf_viewer_download_button(page):
+                    raise RuntimeError("no viewer download button found")
+            download_info.value.save_as(dest_path)
+            if validate_saved_pdf(dest_path):
+                return True
+        except Exception:
+            pass
 
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
 
 
-def try_meta_pdf_with_fulltext_referer(page, context, dest_path, playwright_instance=None):
+def try_meta_pdf_with_fulltext_referer(page, context, dest_path):
     # Some proxies (Wiley confirmed) reject a PDF request unless its
     # referer is specifically the full-text HTML page — not just any
     # page on the same site (the abstract page doesn't count) — so
@@ -400,10 +384,10 @@ def try_meta_pdf_with_fulltext_referer(page, context, dest_path, playwright_inst
             page.goto(fulltext_url, wait_until="domcontentloaded", timeout=15000)
         except Exception:
             pass
-    return fetch_or_navigate_to_pdf(page, context, meta_url, dest_path, playwright_instance=playwright_instance)
+    return fetch_or_navigate_to_pdf(page, context, meta_url, dest_path)
 
 
-def fetch_or_navigate_to_pdf(page, context, url, dest_path, nav_timeout=20000, playwright_instance=None):
+def fetch_or_navigate_to_pdf(page, context, url, dest_path, nav_timeout=20000):
     # A raw background fetch (context.request) doesn't look like real
     # browser traffic and can get blocked by Cloudflare-style protection
     # even when a full navigation to the same URL would get through (and
@@ -413,10 +397,7 @@ def fetch_or_navigate_to_pdf(page, context, url, dest_path, nav_timeout=20000, p
     # this URL came from.
     if fetch_pdf_if_thats_what_this_url_is(context, url, dest_path):
         return True
-    return goto_and_capture_direct_download(
-        page, context, url, dest_path, nav_timeout,
-        referer=page.url, playwright_instance=playwright_instance,
-    )
+    return goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, referer=page.url)
 
 
 def looks_like_login_page(page):
@@ -619,7 +600,7 @@ def find_download_icon_point(page, template_path, threshold=0.8):
     return (max_loc[0] + tw // 2, max_loc[1] + th // 2)
 
 
-def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15, playwright_instance=None):
+def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
     # Shared by both detection methods above: a click might trigger a
     # same-tab download, or open a new tab showing/streaming the PDF.
     result = {"done": False}
@@ -640,8 +621,17 @@ def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15, playw
             new_page.wait_for_load_state("domcontentloaded", timeout=8000)
         except Exception:
             pass
+
         if page_is_showing_pdf(new_page):
-            result["done"] = print_displayed_pdf(new_page, context, playwright_instance, dest_path)
+            try:
+                with new_page.expect_download(timeout=8000) as download_info:
+                    if not click_chrome_pdf_viewer_download_button(new_page):
+                        raise RuntimeError("no viewer download button found")
+                download_info.value.save_as(dest_path)
+                result["done"] = validate_saved_pdf(dest_path)
+            except Exception:
+                pass
+
         if not result["done"]:
             try:
                 resp = context.request.get(new_page.url)
@@ -677,7 +667,7 @@ def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15, playw
 
 def try_download_paper(
     page, context, row, target_urls, dest_path,
-    icon_template_path="", icon_match_threshold=0.8, playwright_instance=None,
+    icon_template_path="", icon_match_threshold=0.8,
 ):
     # Layer 1: try each candidate entry point (proxy, LibKey, ...) in turn
     # — one might serve the PDF directly even if another errors out. Each
@@ -687,13 +677,17 @@ def try_download_paper(
     # cold, referer-less request (which some proxies reject).
     referer = None
     for url in target_urls:
-        if goto_and_capture_direct_download(
-            page, context, url, dest_path, nav_timeout=25000,
-            referer=referer, playwright_instance=playwright_instance,
-        ):
+        if goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout=25000, referer=referer):
             return True
         referer = page.url
 
+    # This is the only manual-intervention point in this function: a
+    # login/bot-check wall genuinely blocks everything below, so it's
+    # worth pausing once for it. Nothing past this point pauses or
+    # navigates elsewhere again — if the page we're already on doesn't
+    # have what we need, this paper is marked not-downloaded and the
+    # script moves on to the next one, rather than bouncing back through
+    # the journal site (which can re-trigger another login prompt).
     reason = describe_manual_step_needed(page)
     if reason:
         print(f"needs {reason}")
@@ -705,19 +699,16 @@ def try_download_paper(
             page.wait_for_load_state("domcontentloaded", timeout=15000)
         except Exception:
             pass
-        if goto_and_capture_direct_download(
-            page, context, page.url, dest_path, nav_timeout=15000,
-            playwright_instance=playwright_instance,
-        ):
+        if goto_and_capture_direct_download(page, context, page.url, dest_path, nav_timeout=15000):
             return True
 
     # Layer 2: scholarly metadata embedded in <head>, if the page has it.
-    if try_meta_pdf_with_fulltext_referer(page, context, dest_path, playwright_instance=playwright_instance):
+    if try_meta_pdf_with_fulltext_referer(page, context, dest_path):
         return True
 
     # Layer 3: an embedded PDF viewer (<embed>/<iframe>) rather than a link.
     embed_url = find_embedded_pdf_url(page)
-    if embed_url and fetch_or_navigate_to_pdf(page, context, embed_url, dest_path, playwright_instance=playwright_instance):
+    if embed_url and fetch_or_navigate_to_pdf(page, context, embed_url, dest_path):
         return True
 
     # Layer 4: a download control matching known specific markup patterns
@@ -730,42 +721,15 @@ def try_download_paper(
     if locator is None:
         locator = find_download_locator_by_accessibility(page)
 
-    if locator is not None:
-        if click_and_capture(
-            page, context, lambda: locator.click(timeout=5000), dest_path,
-            playwright_instance=playwright_instance,
-        ):
-            return True
+    if locator is not None and click_and_capture(page, context, lambda: locator.click(timeout=5000), dest_path):
+        return True
 
     # Layer 6: the same icon located by its actual pixel appearance, for
     # icons with no accessible name or matching markup at all.
     icon_point = find_download_icon_point(page, icon_template_path, icon_match_threshold)
     if icon_point is not None:
         x, y = icon_point
-        if click_and_capture(
-            page, context, lambda: page.mouse.click(x, y), dest_path,
-            playwright_instance=playwright_instance,
-        ):
-            return True
-
-    # Nothing found anywhere on this page — one more chance to log in or
-    # clear a bot-check if that's what's actually blocking things. Re-check
-    # whatever's currently loaded rather than navigating anywhere again —
-    # re-hitting a login-triggering URL after already clearing it once can
-    # invalidate the just-established session (seen as a stale/expired
-    # Shibboleth flow error).
-    reason = describe_manual_step_needed(page)
-    if reason:
-        print(f"needs {reason}")
-        input(
-            "Please handle it in the browser window, then press Enter "
-            "here to continue..."
-        )
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
-        except Exception:
-            pass
-        if try_meta_pdf_with_fulltext_referer(page, context, dest_path, playwright_instance=playwright_instance):
+        if click_and_capture(page, context, lambda: page.mouse.click(x, y), dest_path):
             return True
 
     return False
@@ -904,7 +868,6 @@ def main():
                 succeeded = try_download_paper(
                     page, context, row, target_urls, dest_path,
                     icon_template_path, icon_match_threshold,
-                    playwright_instance=p,
                 )
             except Exception as e:
                 if "closed" in str(e).lower() or "closed" in type(e).__name__.lower():
