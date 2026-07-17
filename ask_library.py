@@ -299,6 +299,14 @@ def main():
         sections.append((sub, body, results))
 
     lines = ["# Answer from your library", "", f"**Question:** {question}", ""]
+    if not llm:
+        lines += [
+            "> ⚠ **No local AI was active for this run.** What follows are "
+            "verbatim excerpts from your papers (retrieval-only mode), NOT "
+            "composed answers. For written, structured answers, get Ollama "
+            "or llama-cpp-python working and run the question again.",
+            "",
+        ]
     for i, (sub, body, _) in enumerate(sections, 1):
         lines += [f"## {i}. {sub}", "", body, ""]
     refs = build_references(db, sorted(used_entries))
