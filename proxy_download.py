@@ -266,29 +266,66 @@ def fetch_pdf_if_thats_what_this_url_is(context, url, dest_path, timeout=20000):
     return False
 
 
-def page_is_showing_pdf(page):
+def page_is_showing_pdf(page, timeout_ms=8000):
     # When Chrome's built-in viewer is displaying a PDF (rather than an
-    # HTML page), the document itself reports this — no network
-    # interception needed to know what's on screen.
+    # HTML page), the document itself reports this. Actively waits
+    # rather than checking once — there can be a brief redirect/loading
+    # gap between the navigation resolving and the PDF viewer taking
+    # over, and checking too early reads "text/html" and gives up on a
+    # page that was about to be the right one.
     try:
-        return page.evaluate("document.contentType") == "application/pdf"
+        page.wait_for_function("document.contentType === 'application/pdf'", timeout=timeout_ms)
+        return True
     except Exception:
         return False
 
 
-def print_displayed_pdf(page, dest_path):
+def print_displayed_pdf(page, context, playwright_instance, dest_path):
     # Only ever called when page_is_showing_pdf() is true: this exports
-    # the exact PDF Chrome is already correctly rendering, rather than
-    # an arbitrary webpage — faithful reproduction, not a "print this
-    # article page and hope" snapshot.
+    # the exact PDF Chrome is already correctly rendering (Chrome's own
+    # download icon here is part of its native viewer UI, not the page
+    # DOM — nothing to click; exporting is the only way to grab it).
     try:
         page.pdf(path=dest_path)
-        return validate_saved_pdf(dest_path)
+        if validate_saved_pdf(dest_path):
+            return True
+    except Exception:
+        pass
+
+    # Chrome's automated print-to-PDF has historically only worked
+    # reliably in headless mode, and this browser runs headed on purpose
+    # (so you can log in / clear bot-checks). Fall back to a short-lived
+    # headless clone of this session (same cookies) just to export this
+    # one already-confirmed PDF.
+    if playwright_instance is None:
+        return False
+    try:
+        cookies = context.cookies()
+    except Exception:
+        cookies = []
+
+    headless_browser = None
+    try:
+        headless_browser = playwright_instance.chromium.launch(headless=True)
+        headless_context = headless_browser.new_context()
+        if cookies:
+            headless_context.add_cookies(cookies)
+        temp_page = headless_context.new_page()
+        temp_page.goto(page.url, wait_until="domcontentloaded", timeout=20000)
+        temp_page.pdf(path=dest_path)
     except Exception:
         return False
+    finally:
+        if headless_browser is not None:
+            try:
+                headless_browser.close()
+            except Exception:
+                pass
+
+    return validate_saved_pdf(dest_path)
 
 
-def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000, referer=None):
+def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000, referer=None, playwright_instance=None):
     # page.goto() sends no Referer by default, unlike a real link click —
     # some publisher proxies (Wiley confirmed) bounce a referer-less
     # request to the PDF URL back to the article's abstract page as an
@@ -312,13 +349,13 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
     # directly rather than making a second network request for the same
     # file (which can get blocked even when the original navigation that
     # already fetched it successfully wasn't).
-    if page_is_showing_pdf(page) and print_displayed_pdf(page, dest_path):
+    if page_is_showing_pdf(page) and print_displayed_pdf(page, context, playwright_instance, dest_path):
         return True
 
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
 
 
-def fetch_or_navigate_to_pdf(page, context, url, dest_path, nav_timeout=20000):
+def fetch_or_navigate_to_pdf(page, context, url, dest_path, nav_timeout=20000, playwright_instance=None):
     # A raw background fetch (context.request) doesn't look like real
     # browser traffic and can get blocked by Cloudflare-style protection
     # even when a full navigation to the same URL would get through (and
@@ -328,7 +365,10 @@ def fetch_or_navigate_to_pdf(page, context, url, dest_path, nav_timeout=20000):
     # this URL came from.
     if fetch_pdf_if_thats_what_this_url_is(context, url, dest_path):
         return True
-    return goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, referer=page.url)
+    return goto_and_capture_direct_download(
+        page, context, url, dest_path, nav_timeout,
+        referer=page.url, playwright_instance=playwright_instance,
+    )
 
 
 def looks_like_login_page(page):
@@ -495,7 +535,7 @@ def find_download_icon_point(page, template_path, threshold=0.8):
     return (max_loc[0] + tw // 2, max_loc[1] + th // 2)
 
 
-def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
+def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15, playwright_instance=None):
     # Shared by both detection methods above: a click might trigger a
     # same-tab download, or open a new tab showing/streaming the PDF.
     result = {"done": False}
@@ -517,7 +557,7 @@ def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
         except Exception:
             pass
         if page_is_showing_pdf(new_page):
-            result["done"] = print_displayed_pdf(new_page, dest_path)
+            result["done"] = print_displayed_pdf(new_page, context, playwright_instance, dest_path)
         if not result["done"]:
             try:
                 resp = context.request.get(new_page.url)
@@ -553,7 +593,7 @@ def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
 
 def try_download_paper(
     page, context, row, target_urls, dest_path,
-    icon_template_path="", icon_match_threshold=0.8,
+    icon_template_path="", icon_match_threshold=0.8, playwright_instance=None,
 ):
     # Layer 1: try each candidate entry point (proxy, LibKey, ...) in turn
     # — one might serve the PDF directly even if another errors out. Each
@@ -563,7 +603,10 @@ def try_download_paper(
     # cold, referer-less request (which some proxies reject).
     referer = None
     for url in target_urls:
-        if goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout=25000, referer=referer):
+        if goto_and_capture_direct_download(
+            page, context, url, dest_path, nav_timeout=25000,
+            referer=referer, playwright_instance=playwright_instance,
+        ):
             return True
         referer = page.url
 
@@ -578,19 +621,22 @@ def try_download_paper(
             page.wait_for_load_state("domcontentloaded", timeout=15000)
         except Exception:
             pass
-        if goto_and_capture_direct_download(page, context, page.url, dest_path, nav_timeout=15000):
+        if goto_and_capture_direct_download(
+            page, context, page.url, dest_path, nav_timeout=15000,
+            playwright_instance=playwright_instance,
+        ):
             return True
 
     # Layer 2: scholarly metadata embedded in <head>, if the page has it.
     # Tries a background fetch first, falls back to a real navigation
     # (survives Cloudflare-style blocks on the lightweight fetch).
     meta_url = find_meta_pdf_url(page)
-    if meta_url and fetch_or_navigate_to_pdf(page, context, meta_url, dest_path):
+    if meta_url and fetch_or_navigate_to_pdf(page, context, meta_url, dest_path, playwright_instance=playwright_instance):
         return True
 
     # Layer 3: an embedded PDF viewer (<embed>/<iframe>) rather than a link.
     embed_url = find_embedded_pdf_url(page)
-    if embed_url and fetch_or_navigate_to_pdf(page, context, embed_url, dest_path):
+    if embed_url and fetch_or_navigate_to_pdf(page, context, embed_url, dest_path, playwright_instance=playwright_instance):
         return True
 
     # Layer 4: a download control matching known specific markup patterns
@@ -604,7 +650,10 @@ def try_download_paper(
         locator = find_download_locator_by_accessibility(page)
 
     if locator is not None:
-        if click_and_capture(page, context, lambda: locator.click(timeout=5000), dest_path):
+        if click_and_capture(
+            page, context, lambda: locator.click(timeout=5000), dest_path,
+            playwright_instance=playwright_instance,
+        ):
             return True
 
     # Layer 6: the same icon located by its actual pixel appearance, for
@@ -612,7 +661,10 @@ def try_download_paper(
     icon_point = find_download_icon_point(page, icon_template_path, icon_match_threshold)
     if icon_point is not None:
         x, y = icon_point
-        if click_and_capture(page, context, lambda: page.mouse.click(x, y), dest_path):
+        if click_and_capture(
+            page, context, lambda: page.mouse.click(x, y), dest_path,
+            playwright_instance=playwright_instance,
+        ):
             return True
 
     # Nothing found anywhere on this page — one more chance to log in or
@@ -633,7 +685,7 @@ def try_download_paper(
         except Exception:
             pass
         meta_url = find_meta_pdf_url(page)
-        if meta_url and fetch_or_navigate_to_pdf(page, context, meta_url, dest_path):
+        if meta_url and fetch_or_navigate_to_pdf(page, context, meta_url, dest_path, playwright_instance=playwright_instance):
             return True
 
     return False
@@ -721,6 +773,7 @@ def main():
                 succeeded = try_download_paper(
                     page, context, row, target_urls, dest_path,
                     icon_template_path, icon_match_threshold,
+                    playwright_instance=p,
                 )
             except Exception as e:
                 if "closed" in str(e).lower() or "closed" in type(e).__name__.lower():
