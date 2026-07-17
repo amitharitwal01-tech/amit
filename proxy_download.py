@@ -498,6 +498,26 @@ KNOWN_ICON_PATH_PREFIXES = (
 )
 
 
+SUPPLEMENTARY_HINT_PATTERN = re.compile(r"supporting|supplementary|\bsi\b", re.IGNORECASE)
+
+
+def looks_like_supplementary_link(locator):
+    # A "Download" control that's actually for Supporting Information
+    # produces a real, valid PDF — just the wrong one. Skip anything
+    # whose own text/label mentions it, matching only the main article.
+    parts = []
+    for getter in (
+        lambda: locator.inner_text(),
+        lambda: locator.get_attribute("aria-label"),
+        lambda: locator.get_attribute("title"),
+    ):
+        try:
+            parts.append(getter() or "")
+        except Exception:
+            pass
+    return bool(SUPPLEMENTARY_HINT_PATTERN.search(" ".join(parts)))
+
+
 def nearest_interactive_ancestor(locator):
     ancestor = locator.locator(
         "xpath=ancestor::*[self::button or self::a or @role='button' or @tabindex][1]"
@@ -516,7 +536,9 @@ def find_download_control_by_known_markup(page, timeout=4000):
         try:
             if path_locator.count() > 0:
                 path_locator.first.wait_for(state="attached", timeout=timeout)
-                return nearest_interactive_ancestor(path_locator.first)
+                candidate = nearest_interactive_ancestor(path_locator.first)
+                if not looks_like_supplementary_link(candidate):
+                    return candidate
         except Exception:
             continue
 
@@ -524,7 +546,9 @@ def find_download_control_by_known_markup(page, timeout=4000):
     try:
         if span_locator.count() > 0:
             span_locator.first.wait_for(state="attached", timeout=timeout)
-            return nearest_interactive_ancestor(span_locator.first)
+            candidate = nearest_interactive_ancestor(span_locator.first)
+            if not looks_like_supplementary_link(candidate):
+                return candidate
     except Exception:
         pass
 
@@ -535,16 +559,24 @@ def find_download_locator_by_accessibility(page, timeout=6000):
     # Uses the browser's own accessibility-name computation (aria-label,
     # aria-labelledby, title, or associated/hidden text) rather than raw
     # CSS attributes — catches icon-only controls a plain selector misses,
-    # as long as the icon has *some* accessible name at all.
+    # as long as the icon has *some* accessible name at all. Checks every
+    # match, not just the first, skipping any that look like a Supporting
+    # Information link rather than the main article.
     for role in ("link", "button"):
         locator = page.get_by_role(role, name=DOWNLOAD_NAME_PATTERN)
         try:
-            if locator.count() == 0:
-                continue
-            locator.first.wait_for(state="visible", timeout=timeout)
-            return locator.first
+            count = locator.count()
         except Exception:
             continue
+        for i in range(count):
+            candidate = locator.nth(i)
+            try:
+                candidate.wait_for(state="visible", timeout=timeout)
+            except Exception:
+                continue
+            if looks_like_supplementary_link(candidate):
+                continue
+            return candidate
     return None
 
 
@@ -753,6 +785,57 @@ def save_debug_snapshot(page, doi, debug_dir="debug"):
         pass
 
 
+def normalize_for_matching(text):
+    text = text.lower()
+    text = re.sub(r"[‐-―]", "-", text)  # various dash chars -> plain hyphen
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def pdf_looks_like_the_right_paper(pdf_path, title):
+    # A downloaded PDF passing the %PDF- magic-number check only proves
+    # it's *a* real PDF — not that it's the *right* one. Confirmed
+    # failure mode: grabbing a "Download" link for Supporting
+    # Information (or, worse, an entirely different paper's SI) instead
+    # of the main article. Cross-check the saved file's own text against
+    # the paper's title before ever trusting it.
+    if not title:
+        return True
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return True  # can't verify without the library; don't block on it
+
+    try:
+        reader = PdfReader(pdf_path)
+        text = "".join((p.extract_text() or "") for p in reader.pages[:2])
+    except Exception:
+        return True  # unreadable/encrypted etc. — not what we're checking for here
+
+    if not text.strip():
+        return True
+
+    norm_text = normalize_for_matching(text)
+    norm_title = normalize_for_matching(title)
+
+    # Strongest signal: a long run of the title appears verbatim — the
+    # title is reproduced as a heading on the article's own first page.
+    title_words = norm_title.split()
+    if len(title_words) >= 6 and " ".join(title_words[:8]) in norm_text:
+        return True
+
+    # Fallback: high overlap of distinctive (4+ letter) words. Threshold
+    # is strict (not just >50%) because same-subfield papers can share a
+    # lot of vocabulary even when they're not the same paper — confirmed
+    # by a real mismatch scoring 0.46 against an unrelated paper in the
+    # same topic area.
+    words = {w for w in re.findall(r"[a-z]{4,}", norm_title)}
+    if not words:
+        return True
+    matched = sum(1 for w in words if w in norm_text)
+    return (matched / len(words)) >= 0.7
+
+
 def mark_downloaded(row, dest_path):
     row["Status"] = "downloaded_via_proxy"
     row["PDF_Path"] = dest_path
@@ -836,7 +919,16 @@ def main():
                 save_tracking(tracking_path, tracking)
                 continue
 
-            if succeeded:
+            if succeeded and not pdf_looks_like_the_right_paper(dest_path, title):
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass
+                save_debug_snapshot(page, row.get("DOI", ""))
+                mark_manual_check(row, f"Downloaded a PDF but its text didn't match this paper's title — likely grabbed the wrong file (e.g. Supporting Information) from {page.url}")
+                failed_count += 1
+                print("downloaded file didn't match the paper's title (rejected)")
+            elif succeeded:
                 mark_downloaded(row, dest_path)
                 downloaded_count += 1
                 print("downloaded")

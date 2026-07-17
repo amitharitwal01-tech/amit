@@ -5,3 +5,4 @@ PyYAML>=6.0
 playwright>=1.40
 opencv-python-headless>=4.8
 numpy>=1.24
+pypdf>=4.0
