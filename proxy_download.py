@@ -280,6 +280,49 @@ def page_is_showing_pdf(page, timeout_ms=8000):
         return False
 
 
+def start_pdf_response_capture(page):
+    # Some reader pages (Wiley confirmed via a HAR trace) load as plain
+    # HTML and only fetch the actual PDF afterwards, via a background
+    # XHR their own JS fires once a Cloudflare JS challenge clears —
+    # e.g. navigating to /doi/pdf/{doi} triggers a tracking pixel, two
+    # Cloudflare checks, then an XHR to a completely different endpoint,
+    # /doi/pdfdirect/{doi}, which is where the real bytes come from.
+    # document.contentType never becomes "application/pdf" on that page
+    # (it stays HTML) and there's no native viewer button — the response
+    # itself is the only reliable signal. Must be registered *before*
+    # navigating, since the XHR can fire well after the navigation
+    # itself has settled. Returns a function that waits up to timeout_ms
+    # for a matching response and cleans up the listener either way.
+    captured = {"body": None}
+
+    def on_response(response):
+        if captured["body"] is not None:
+            return
+        try:
+            if response.status != 200:
+                return
+            content_type = response.headers.get("content-type", "")
+        except Exception:
+            return
+        if "pdf" not in content_type.lower():
+            return
+        try:
+            captured["body"] = response.body()
+        except Exception:
+            pass
+
+    page.on("response", on_response)
+
+    def wait(timeout_ms=20000):
+        deadline = time.time() + (timeout_ms / 1000)
+        while time.time() < deadline and captured["body"] is None:
+            page.wait_for_timeout(250)
+        page.remove_listener("response", on_response)
+        return captured["body"]
+
+    return wait
+
+
 def click_chrome_pdf_viewer_download_button(page, timeout=5000):
     # Chrome's built-in PDF viewer toolbar (the icon circled in the
     # user's screenshot) is a real button, just deeply nested in the
@@ -341,6 +384,11 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
                 goto_kwargs["referer"] = referer
             page.goto(url, **goto_kwargs)
 
+    # Registered before navigating so it catches the PDF response
+    # whichever way it actually arrives, including a background XHR
+    # fired well after this navigation settles.
+    wait_for_pdf_body = start_pdf_response_capture(page)
+
     try:
         with page.expect_download(timeout=download_wait_ms) as download_info:
             do_navigate()
@@ -350,12 +398,20 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
     except Exception:
         pass
 
-    # No "download" event doesn't mean no PDF — Chrome's built-in viewer
-    # renders PDFs inline instead. If that's what's on screen, click its
-    # own download button (a real click, same expect_download pattern as
-    # above) rather than making a second network request for the same
-    # file (which can get blocked even when the original navigation that
-    # already fetched it successfully wasn't).
+    # No "download" event doesn't mean no PDF — it may be arriving via a
+    # background XHR a reader page's own JS fires after clearing a bot
+    # check (confirmed via HAR trace), which the listener above has been
+    # waiting for this whole time.
+    body = wait_for_pdf_body(20000)
+    if body and save_if_valid_pdf(body, dest_path):
+        return True
+
+    # Still nothing — maybe Chrome's built-in viewer took over the
+    # document instead (a direct PDF URL, not a reader page). If so,
+    # click its own download button (a real click, same expect_download
+    # pattern as above) rather than making a second network request for
+    # the same file (which can get blocked even when the original
+    # navigation that already fetched it successfully wasn't).
     if page_is_showing_pdf(page):
         try:
             with page.expect_download(timeout=download_wait_ms) as download_info:
@@ -617,12 +673,17 @@ def click_and_capture(page, context, click_fn, dest_path, wait_seconds=15):
     def on_new_page(new_page):
         if result["done"]:
             return
+        wait_for_pdf_body = start_pdf_response_capture(new_page)
         try:
             new_page.wait_for_load_state("domcontentloaded", timeout=8000)
         except Exception:
             pass
 
-        if page_is_showing_pdf(new_page):
+        body = wait_for_pdf_body(15000)
+        if body:
+            result["done"] = save_if_valid_pdf(body, dest_path)
+
+        if not result["done"] and page_is_showing_pdf(new_page):
             try:
                 with new_page.expect_download(timeout=8000) as download_info:
                     if not click_chrome_pdf_viewer_download_button(new_page):
