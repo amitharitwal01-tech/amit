@@ -8,14 +8,21 @@ everything in library_index/library.sqlite3 — linked back to the
 tracking sheet's Entry/DOI/Title/Year/Category so answers can cite
 properly.
 
-Usage:
-    python build_index.py                 # index new/changed papers
-    python build_index.py --rebuild       # start the index over
-    python build_index.py --search "..."  # test: show best-matching passages
+Figures are indexed too: each figure image is saved, paired with its
+caption (the paper's own description of it), and given a visual
+fingerprint (CLIP embedding) — so figures can be found by describing
+them in words, or by showing a similar image.
 
-Everything runs locally on CPU; nothing is uploaded anywhere. The
---search mode returns the papers' own verbatim text, so what it shows
-is exactly what's in your library.
+Usage:
+    python build_index.py                        # index new/changed papers
+    python build_index.py --rebuild              # start the index over
+    python build_index.py --search "..."         # best-matching text passages
+    python build_index.py --find-figure "..."    # figures whose captions match
+    python build_index.py --match-figure img.png # figures that LOOK like yours
+
+Everything runs locally on CPU; nothing is uploaded anywhere. Search
+modes return the papers' own verbatim text, so what they show is
+exactly what's in your library.
 """
 import argparse
 import os
@@ -25,17 +32,24 @@ import sys
 
 import numpy as np
 
-from doi_resolver import load_config, load_tracking
+from doi_resolver import load_config, load_tracking, sanitize_filename
 
 INDEX_DIR = "library_index"
 DB_PATH = os.path.join(INDEX_DIR, "library.sqlite3")
+FIGURES_DIR = os.path.join(INDEX_DIR, "figures")
 
 # Small, fast on CPU, and strong for retrieval; downloaded once
 # (~130 MB) on first run, then cached locally.
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
+# Visual fingerprints for figure images (also a one-time download).
+IMAGE_EMBED_MODEL = "Qdrant/clip-ViT-B-32-vision"
+
 CHUNK_TARGET_CHARS = 1200
 CHUNK_OVERLAP_CHARS = 200
+
+# Embedded images smaller than this are logos, ORCID icons, etc.
+MIN_FIGURE_PIXELS = 120
 
 INDEXED_STATUSES = ("downloaded", "downloaded_via_proxy")
 
@@ -52,10 +66,24 @@ def open_db():
     db.execute(
         """CREATE TABLE IF NOT EXISTS chunks(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            doi TEXT, page INTEGER, text TEXT, embedding BLOB
+            doi TEXT, page INTEGER, text TEXT, embedding BLOB,
+            kind TEXT DEFAULT 'text'
         )"""
     )
     db.execute("CREATE INDEX IF NOT EXISTS chunks_doi ON chunks(doi)")
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS figures(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doi TEXT, page INTEGER, caption TEXT,
+            image_path TEXT, clip BLOB
+        )"""
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS figures_doi ON figures(doi)")
+    # Older index files predate the 'kind' column — add it in place so
+    # nobody has to rebuild just because the schema grew.
+    columns = [r[1] for r in db.execute("PRAGMA table_info(chunks)")]
+    if "kind" not in columns:
+        db.execute("ALTER TABLE chunks ADD COLUMN kind TEXT DEFAULT 'text'")
     return db
 
 
@@ -69,6 +97,24 @@ def get_embedder():
             "then run this script again."
         )
     return TextEmbedding(model_name=EMBED_MODEL)
+
+
+def get_image_embedder(required=False):
+    # Loaded lazily and allowed to fail softly during indexing: figure
+    # images and captions are still saved and searchable by text even
+    # if the visual-fingerprint model can't load; only --match-figure
+    # strictly needs it.
+    try:
+        from fastembed import ImageEmbedding
+        return ImageEmbedding(model_name=IMAGE_EMBED_MODEL)
+    except Exception as e:
+        if required:
+            sys.exit(
+                f"Couldn't load the image-matching model ({type(e).__name__}: {e}).\n"
+                "Check that 'fastembed' is installed and the model download completed."
+            )
+        print(f"  (figure visual matching disabled: {type(e).__name__}: {e})")
+        return None
 
 
 def clean_page_text(text):
@@ -121,6 +167,71 @@ def chunk_page_text(text):
     return chunks
 
 
+FIGURE_CAPTION_START = re.compile(r"^(?:Fig(?:ure)?|Scheme)\.?\s*\d+", re.IGNORECASE)
+
+
+def extract_figure_captions(page_text):
+    # Captions start a line with "Figure N" / "Fig. N" / "Scheme N" and
+    # run until a blank line or the next caption. In-text mentions
+    # ("as shown in Figure 2a...") sit mid-line, so anchoring to line
+    # starts keeps them out.
+    captions = []
+    lines = page_text.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if FIGURE_CAPTION_START.match(line):
+            caption = line
+            j = i + 1
+            while (
+                j < len(lines)
+                and lines[j].strip()
+                and not FIGURE_CAPTION_START.match(lines[j].strip())
+                and len(caption) < 600
+            ):
+                caption += " " + lines[j].strip()
+                j += 1
+            if len(caption) >= 25:  # "Figure 1" alone isn't a caption
+                captions.append(caption[:600])
+            i = j
+        else:
+            i += 1
+    return captions
+
+
+def extract_figures(pdf_path):
+    # Returns (page_number, caption, image_bytes, extension) per figure.
+    # Raster images embedded in the PDF are pulled out directly; when a
+    # page clearly has figures (captions found) but no raster images —
+    # vector-drawn plots are common — the whole page is rendered once so
+    # visual matching still has something to look at.
+    import fitz
+    results = []
+    with fitz.open(pdf_path) as doc:
+        for number, page in enumerate(doc, 1):
+            captions = extract_figure_captions(clean_page_text(page.get_text("text")))
+            images = []
+            seen = set()
+            for info in page.get_images(full=True):
+                xref = info[0]
+                if xref in seen:
+                    continue
+                seen.add(xref)
+                try:
+                    img = doc.extract_image(xref)
+                except Exception:
+                    continue
+                if img.get("width", 0) < MIN_FIGURE_PIXELS or img.get("height", 0) < MIN_FIGURE_PIXELS:
+                    continue
+                images.append((img["image"], img["ext"]))
+            if not images and captions:
+                images = [(page.get_pixmap(dpi=100).tobytes("png"), "png")]
+            for idx, (data, ext) in enumerate(images):
+                caption = captions[idx] if idx < len(captions) else ""
+                results.append((number, caption, data, ext))
+    return results
+
+
 def embed_passages(embedder, texts):
     vectors = np.array(list(embedder.embed(texts)), dtype=np.float32)
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
@@ -128,14 +239,71 @@ def embed_passages(embedder, texts):
     return vectors / norms
 
 
-def index_paper(db, embedder, row):
+def index_figures(db, embedder, image_embedder, key, pdf_path):
+    # Old figure files first, so a re-index doesn't leave orphans.
+    for (old_path,) in db.execute("SELECT image_path FROM figures WHERE doi = ?", (key,)):
+        try:
+            os.remove(old_path)
+        except OSError:
+            pass
+    db.execute("DELETE FROM figures WHERE doi = ?", (key,))
+
+    figures = extract_figures(pdf_path)
+    if not figures:
+        return 0
+
+    os.makedirs(FIGURES_DIR, exist_ok=True)
+    base = sanitize_filename(key.replace("/", "_"))
+    saved = []
+    for n, (page_number, caption, data, ext) in enumerate(figures, 1):
+        image_path = os.path.join(FIGURES_DIR, f"{base}_p{page_number}_{n}.{ext}")
+        with open(image_path, "wb") as f:
+            f.write(data)
+        saved.append((page_number, caption, image_path))
+
+    clip_vectors = [None] * len(saved)
+    if image_embedder is not None:
+        try:
+            vectors = np.array(list(image_embedder.embed([p for _, _, p in saved])), dtype=np.float32)
+            norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            clip_vectors = list(vectors / norms)
+        except Exception:
+            pass
+
+    db.executemany(
+        "INSERT INTO figures(doi, page, caption, image_path, clip) VALUES (?, ?, ?, ?, ?)",
+        [
+            (key, page_number, caption, image_path,
+             vector.tobytes() if vector is not None else None)
+            for (page_number, caption, image_path), vector in zip(saved, clip_vectors)
+        ],
+    )
+
+    # Captions go into the text index too (marked as figures), so a
+    # normal search finds "the figure that shows X" alongside prose.
+    captioned = [(page_number, f"[Figure, p.{page_number}] {caption}")
+                 for page_number, caption, _ in saved if caption]
+    if captioned:
+        vectors = embed_passages(embedder, [text for _, text in captioned])
+        db.executemany(
+            "INSERT INTO chunks(doi, page, text, embedding, kind) VALUES (?, ?, ?, ?, 'figure')",
+            [
+                (key, page_number, text, vector.tobytes())
+                for (page_number, text), vector in zip(captioned, vectors)
+            ],
+        )
+    return len(saved)
+
+
+def index_paper(db, embedder, image_embedder, row):
     doi = row.get("DOI", "")
     pdf_path = row.get("PDF_Path", "")
     key = doi or pdf_path
 
     pages = extract_pages(pdf_path)
     if not pages:
-        return 0, "no extractable text (scanned images only?)"
+        return 0, 0, "no extractable text (scanned images only?)"
 
     db.execute("DELETE FROM chunks WHERE doi = ?", (key,))
 
@@ -144,7 +312,7 @@ def index_paper(db, embedder, row):
         for chunk in chunk_page_text(text):
             page_chunks.append((number, chunk))
     if not page_chunks:
-        return 0, "nothing substantial to index"
+        return 0, 0, "nothing substantial to index"
 
     vectors = embed_passages(embedder, [c for _, c in page_chunks])
     db.executemany(
@@ -154,6 +322,9 @@ def index_paper(db, embedder, row):
             for (number, chunk), vector in zip(page_chunks, vectors)
         ],
     )
+
+    figure_count = index_figures(db, embedder, image_embedder, key, pdf_path)
+
     db.execute(
         """INSERT OR REPLACE INTO papers
            (doi, entry, title, year, category, pdf_path, mtime, chunk_count)
@@ -164,7 +335,7 @@ def index_paper(db, embedder, row):
         ),
     )
     db.commit()
-    return len(page_chunks), ""
+    return len(page_chunks), figure_count, ""
 
 
 def papers_to_index(db, tracking, rebuild=False):
@@ -209,15 +380,17 @@ def run_indexing(rebuild=False):
         return
 
     print(f"{len(todo)} paper(s) to index ({already} already done).")
-    print("Loading the embedding model (first run downloads it once)...")
+    print("Loading the embedding models (first run downloads them once)...")
     embedder = get_embedder()
+    image_embedder = get_image_embedder()
 
     total_chunks = 0
+    total_figures = 0
     for i, row in enumerate(todo, 1):
         title = row.get("Title", "")[:70]
         print(f"[{i}/{len(todo)}] {title!r}", end=" ... ", flush=True)
         try:
-            count, problem = index_paper(db, embedder, row)
+            count, figure_count, problem = index_paper(db, embedder, image_embedder, row)
         except Exception as e:
             print(f"failed ({type(e).__name__}: {e})")
             continue
@@ -225,22 +398,30 @@ def run_indexing(rebuild=False):
             print(problem)
         else:
             total_chunks += count
-            print(f"{count} passages")
+            total_figures += figure_count
+            print(f"{count} passages, {figure_count} figures")
 
     indexed = db.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
     print()
-    print(f"Done. {indexed} paper(s) in the index, {total_chunks} new passages added.")
-    print(f"Try it:  python build_index.py --search \"your question here\"")
+    print(f"Done. {indexed} paper(s) in the index, {total_chunks} new passages and {total_figures} figures added.")
+    print("Try:  python build_index.py --search \"your question\"")
+    print("      python build_index.py --find-figure \"what the figure shows\"")
+    print("      python build_index.py --match-figure path\\to\\your_image.png")
 
 
-def run_search(query, top_k=5):
+def run_search(query, top_k=5, kind=None):
     db = open_db()
+    kind_filter = "WHERE c.kind = 'figure'" if kind == "figure" else ""
     rows = db.execute(
-        """SELECT c.text, c.page, c.embedding, p.entry, p.title, p.year, p.category
-           FROM chunks c JOIN papers p ON p.doi = c.doi"""
+        f"""SELECT c.text, c.page, c.embedding, p.entry, p.title, p.year, p.category
+            FROM chunks c JOIN papers p ON p.doi = c.doi {kind_filter}"""
     ).fetchall()
     if not rows:
-        sys.exit("The index is empty — run  python build_index.py  first.")
+        sys.exit(
+            "No matching index entries — run  python build_index.py  first."
+            if kind is None else
+            "No figure captions in the index yet — run  python build_index.py  first."
+        )
 
     embedder = get_embedder()
     query_vector = np.array(list(embedder.query_embed(query)), dtype=np.float32)[0]
@@ -260,15 +441,59 @@ def run_search(query, top_k=5):
         print(text)
 
 
+def run_match_figure(image_path, top_k=5):
+    # "Here is a figure — what in my library looks like this?" The
+    # given image and every stored figure share the same visual-
+    # fingerprint space, so nearest neighbours are visually similar
+    # figures; each brings its caption and source paper along.
+    if not os.path.exists(image_path):
+        sys.exit(f"Image not found: {image_path}")
+    db = open_db()
+    rows = db.execute(
+        """SELECT f.caption, f.page, f.image_path, f.clip, p.entry, p.title, p.year
+           FROM figures f JOIN papers p ON p.doi = f.doi
+           WHERE f.clip IS NOT NULL"""
+    ).fetchall()
+    if not rows:
+        sys.exit(
+            "No figures with visual fingerprints in the index yet — run "
+            "python build_index.py (with the image model able to load) first."
+        )
+
+    embedder = get_image_embedder(required=True)
+    query_vector = np.array(list(embedder.embed([image_path])), dtype=np.float32)[0]
+    norm = np.linalg.norm(query_vector)
+    if norm:
+        query_vector /= norm
+
+    matrix = np.frombuffer(b"".join(r[3] for r in rows), dtype=np.float32).reshape(len(rows), -1)
+    scores = matrix @ query_vector
+    best = np.argsort(scores)[::-1][:top_k]
+
+    print(f"Figures most similar to {image_path}:")
+    for rank, idx in enumerate(best, 1):
+        caption, page, stored_path, _, entry, title, year = rows[idx]
+        print()
+        print(f"--- {rank}. [Entry {entry} | {year}] {title[:80]}  (p.{page}, similarity {scores[idx]:.2f})")
+        print(f"    image: {stored_path}")
+        print(f"    caption: {caption or '(no caption found for this figure)'}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build/search the local paper index.")
     parser.add_argument("--rebuild", action="store_true", help="re-index everything from scratch")
     parser.add_argument("--search", metavar="QUERY", help="show the best-matching passages for a question")
-    parser.add_argument("--top", type=int, default=5, help="how many passages --search shows")
+    parser.add_argument("--find-figure", metavar="QUERY", help="find figures by describing what they show")
+    parser.add_argument("--match-figure", metavar="IMAGE", help="find stored figures visually similar to an image file")
+    parser.add_argument("--top", type=int, default=5, help="how many results the search modes show")
     args = parser.parse_args()
 
     if args.search:
         run_search(args.search, args.top)
+    elif args.find_figure:
+        run_search(args.find_figure, args.top, kind="figure")
+    elif args.match_figure:
+        run_match_figure(args.match_figure, args.top)
     else:
         run_indexing(args.rebuild)
 
