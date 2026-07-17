@@ -645,6 +645,35 @@ def looks_like_bot_challenge_page(page):
     return any(phrase in content for phrase in BOT_CHALLENGE_PHRASES)
 
 
+# Phrases publishers and EZproxy-style proxies show when the
+# institution has no subscription: purchase/rent offers on the article
+# page, or the proxy refusing to serve an unconfigured journal at all.
+NO_SUBSCRIPTION_PHRASES = (
+    "purchase instant access",
+    "purchase access",
+    "purchase this article",
+    "buy this article",
+    "buy article",
+    "rent this article",
+    "add to cart",
+    "48-hour online access",
+    "not authorized for use through this",   # EZproxy: host not configured
+    "not on the list of databases",          # EZproxy menu error
+    "does not subscribe",
+    "not subscribed",
+    "does not have access",
+    "do not currently have access",
+)
+
+
+def looks_like_no_subscription_page(page):
+    try:
+        content = (page.content() or "").lower()
+    except Exception:
+        return False
+    return any(phrase in content for phrase in NO_SUBSCRIPTION_PHRASES)
+
+
 def describe_manual_step_needed(page):
     if looks_like_bot_challenge_page(page):
         return "a quick human/bot-check (tick the verification box)"
@@ -1148,6 +1177,15 @@ def main():
                 mark_downloaded(row, dest_path)
                 downloaded_count += 1
                 print("downloaded")
+            elif looks_like_no_subscription_page(page):
+                save_debug_snapshot(page, row.get("DOI", ""))
+                mark_manual_check(
+                    row,
+                    "Looks like the university has no subscription for this "
+                    f"journal (a purchase/no-access page was shown at {page.url})",
+                )
+                failed_count += 1
+                print("no subscription for this journal, it seems — marked and moving on")
             else:
                 save_debug_snapshot(page, row.get("DOI", ""))
                 mark_manual_check(row, f"Could not find a download control on {page.url}")
