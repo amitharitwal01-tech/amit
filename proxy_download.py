@@ -325,19 +325,50 @@ def print_displayed_pdf(page, context, playwright_instance, dest_path):
     return validate_saved_pdf(dest_path)
 
 
+def navigate_via_real_click(page, url, timeout):
+    # Chrome only flags a navigation as genuinely user-triggered (the
+    # Sec-Fetch-User request header) for actual input events — a typed
+    # URL, or a click, including a *synthetic* click dispatched via CDP
+    # (which is what Playwright's .click() uses, and Chromium treats as
+    # trusted input). page.goto() calls Page.navigate() directly, which
+    # is never flagged this way. Some anti-hotlink checks key off this
+    # signal, independent of referer, so injecting and clicking a real
+    # link — instead of goto() — makes the request indistinguishable
+    # from an actual click for that purpose.
+    page.evaluate(
+        """(url) => {
+            let a = document.getElementById('__pipeline_click_target');
+            if (!a) {
+                a = document.createElement('a');
+                a.id = '__pipeline_click_target';
+                a.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;';
+                document.body.appendChild(a);
+            }
+            a.href = url;
+        }""",
+        url,
+    )
+    page.click("#__pipeline_click_target", timeout=3000)
+    page.wait_for_load_state("domcontentloaded", timeout=timeout)
+
+
 def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout, download_wait_ms=5000, referer=None, playwright_instance=None):
-    # page.goto() sends no Referer by default, unlike a real link click —
-    # some publisher proxies (Wiley confirmed) bounce a referer-less
-    # request to the PDF URL back to the article's abstract page as an
-    # anti-hotlinking measure. Passing referer= mimics "clicked Download
-    # from this article page" when we already have one to point at.
-    goto_kwargs = {"wait_until": "domcontentloaded", "timeout": nav_timeout}
-    if referer:
-        goto_kwargs["referer"] = referer
+    def do_navigate():
+        try:
+            navigate_via_real_click(page, url, nav_timeout)
+        except Exception:
+            # No existing page to inject a link into (e.g. the very
+            # first navigation), or the click itself failed for some
+            # other reason — fall back to a plain goto, still with
+            # referer= as a second-best signal.
+            goto_kwargs = {"wait_until": "domcontentloaded", "timeout": nav_timeout}
+            if referer:
+                goto_kwargs["referer"] = referer
+            page.goto(url, **goto_kwargs)
 
     try:
         with page.expect_download(timeout=download_wait_ms) as download_info:
-            page.goto(url, **goto_kwargs)
+            do_navigate()
         download_info.value.save_as(dest_path)
         if validate_saved_pdf(dest_path):
             return True
