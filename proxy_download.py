@@ -391,22 +391,35 @@ def fetch_pdf_via_inpage_request(page, urls, dest_path, attempts=4, delay_ms=300
 
 
 def click_chrome_pdf_viewer_download_button(page, timeout=5000):
-    # Chrome's built-in PDF viewer toolbar (the icon circled in the
-    # user's screenshot) is a real button, just deeply nested in the
-    # viewer's shadow DOM — not something page.pdf() can export (it
-    # doesn't participate in normal page printing at all, confirmed by
-    # it showing a "use the Print button on the toolbar" placeholder
-    # instead of the document). Playwright's selectors pierce open
-    # shadow roots automatically, so a plain CSS selector reaches it
-    # without needing special syntax.
-    for selector in ("pdf-viewer #download", "viewer-pdf-toolbar #download", "#download", "[aria-label='Download' i]"):
-        try:
-            locator = page.locator(selector)
-            if locator.count() > 0:
-                locator.first.click(timeout=timeout)
-                return True
-        except Exception:
-            continue
+    # Chrome's built-in PDF viewer toolbar is a real button, just deeply
+    # nested in the viewer's shadow DOM — not something page.pdf() can
+    # export (it doesn't participate in normal page printing at all,
+    # confirmed by it showing a "use the Print button on the toolbar"
+    # placeholder instead of the document). Playwright's selectors
+    # pierce open shadow roots automatically — but NOT frame boundaries,
+    # and the viewer UI actually lives inside a chrome-extension://
+    # child frame (confirmed by debug snapshots: the top document is a
+    # near-empty wrapper that just links pdf_embedder.css). Search every
+    # frame, not just the top document.
+    frames = [
+        frame for frame in page.frames
+        if frame is page.main_frame or frame.url.startswith("chrome-extension://")
+    ]
+    for frame in frames:
+        for selector in (
+            "pdf-viewer #download",
+            "viewer-pdf-toolbar #download",
+            "cr-icon-button#download",
+            "#download",
+            "[aria-label='Download' i]",
+        ):
+            try:
+                locator = frame.locator(selector)
+                if locator.count() > 0:
+                    locator.first.click(timeout=timeout)
+                    return True
+            except Exception:
+                continue
     return False
 
 
@@ -515,13 +528,14 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
             return True
 
         # Still nothing — maybe Chrome's built-in viewer took over the
-        # document instead (a direct PDF URL, not a reader page). If so,
-        # click its own download button — the persistent listener will
-        # catch what it saves — rather than making a second network
-        # request for the same file (which can get blocked even when the
-        # original navigation that already fetched it successfully
-        # wasn't).
+        # document instead (a direct PDF URL, not a reader page). The
+        # browser demonstrably has the bytes at this point, so try the
+        # in-page fetch once more (the earlier attempts may have run
+        # before the viewer finished settling), then the viewer's own
+        # download button — the persistent listener catches its save.
         if page_is_showing_pdf(page):
+            if fetch_pdf_via_inpage_request(page, [page.url], dest_path, attempts=2, delay_ms=1500):
+                return True
             if click_chrome_pdf_viewer_download_button(page) and download_landed(8000):
                 return True
 
@@ -844,6 +858,17 @@ def try_download_paper(
     page, context, row, target_urls, dest_path,
     icon_template_path="", icon_match_threshold=0.8,
 ):
+    # Start every paper from a clean page. A PDF-viewer page left over
+    # from the previous paper is poison: the viewer's plugin overlays
+    # the whole viewport, so the injected navigation link's click gets
+    # swallowed, the navigation silently never happens, and every later
+    # step then runs against the previous paper's page (confirmed by
+    # debug snapshots showing exactly that state).
+    try:
+        page.goto("about:blank", timeout=5000)
+    except Exception:
+        pass
+
     # Layer 1: try each candidate entry point (proxy, LibKey, ...) in turn
     # — one might serve the PDF directly even if another errors out. Each
     # attempt after the first uses wherever the previous one landed as
@@ -1064,14 +1089,19 @@ def main():
                 continue
 
             if succeeded and not pdf_looks_like_the_right_paper(dest_path, title):
-                try:
-                    os.remove(dest_path)
-                except OSError:
-                    pass
-                save_debug_snapshot(page, row.get("DOI", ""))
-                mark_manual_check(row, f"Downloaded a PDF but its text didn't match this paper's title — likely grabbed the wrong file (e.g. Supporting Information) from {page.url}")
-                failed_count += 1
-                print("downloaded file didn't match the paper's title (rejected)")
+                # Keep the file and count it as downloaded — a mismatch
+                # here is usually just imperfect text extraction or a
+                # title that differs slightly from the Excel sheet, and
+                # throwing away a real PDF is worse than asking for a
+                # quick look. The note flags it for manual verification.
+                mark_downloaded(row, dest_path)
+                row["Notes"] = (
+                    "Downloaded, but the PDF's text didn't clearly match "
+                    "this paper's title — please open it once to confirm "
+                    "it's the right article."
+                )
+                downloaded_count += 1
+                print("downloaded (title didn't clearly match — flagged in Notes for a quick check)")
             elif succeeded:
                 mark_downloaded(row, dest_path)
                 downloaded_count += 1
