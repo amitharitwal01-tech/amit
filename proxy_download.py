@@ -126,7 +126,7 @@ def load_tracking(tracking_path):
         sys.exit(
             f"{tracking_path} not found. Run doi_resolver.py first (Stage 1)."
         )
-    with open(tracking_path, "r", newline="", encoding="utf-8") as f:
+    with open(tracking_path, "r", newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             rows[row["Title"]] = row
     return rows
@@ -1069,7 +1069,10 @@ def main():
             target_urls = build_candidate_urls(row, config)
             dest_path = os.path.join(
                 downloads_dir,
-                build_pdf_filename(row.get("Entry", ""), row.get("Year", ""), title, row.get("DOI", "")),
+                build_pdf_filename(
+                    row.get("Entry", ""), row.get("Category", ""), row.get("Year", ""),
+                    title, row.get("DOI", ""),
+                ),
             )
 
             try:

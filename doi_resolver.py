@@ -16,7 +16,7 @@ import yaml
 
 CONFIG_PATH = "paper_pipeline_config.yaml"
 TRACKING_FIELDS = [
-    "Entry", "Title", "Authors", "DOI", "Year", "Status", "PDF_Path",
+    "Entry", "Title", "Authors", "DOI", "Year", "Category", "Status", "PDF_Path",
     "Source_URL", "Publisher_URL",
     "Corresponding_Author", "Corresponding_Email", "Institute",
     "Key_Info", "Notes", "Last_Updated",
@@ -83,27 +83,38 @@ def load_excel(config):
 def load_tracking(tracking_path):
     rows = {}
     if os.path.exists(tracking_path):
-        with open(tracking_path, "r", newline="", encoding="utf-8") as f:
+        # utf-8-sig transparently handles files both with and without
+        # the BOM that save_tracking now writes.
+        with open(tracking_path, "r", newline="", encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
                 rows[row["Title"]] = row
     return rows
 
 
 def save_tracking(tracking_path, rows):
-    with open(tracking_path, "w", newline="", encoding="utf-8") as f:
+    # utf-8-sig: without the BOM, Excel guesses a legacy encoding when
+    # opening the CSV and renders "‐" as "â€" etc. — confirmed on a
+    # real sheet. The BOM makes it read UTF-8 correctly.
+    with open(tracking_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=TRACKING_FIELDS)
         writer.writeheader()
         for row in rows.values():
             writer.writerow({k: row.get(k, "") for k in TRACKING_FIELDS})
 
     # Also write a real .xlsx alongside the CSV — that's how the sheet
-    # actually gets opened. The CSV stays the source of truth (it's what
+    # actually gets opened: everything on an "All" sheet, plus one sheet
+    # per topic category. The CSV stays the source of truth (it's what
     # gets read back), so a failure here is not fatal.
     base, ext = os.path.splitext(tracking_path)
     try:
-        pd.DataFrame(
+        df = pd.DataFrame(
             [{k: row.get(k, "") for k in TRACKING_FIELDS} for row in rows.values()]
-        ).to_excel(base + ".xlsx", index=False)
+        )
+        with pd.ExcelWriter(base + ".xlsx") as writer:
+            df.to_excel(writer, sheet_name="All", index=False)
+            for category, group in df.groupby("Category"):
+                if str(category).strip():
+                    group.to_excel(writer, sheet_name=str(category)[:31], index=False)
     except Exception:
         pass
 
@@ -152,22 +163,71 @@ def sanitize_filename(text, max_len=120):
 EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
+# Typographic characters that display as "â€"-style garbage when the
+# sheet is opened with the wrong encoding assumption, mapped to plain
+# ASCII equivalents that survive anywhere. (Scientific symbols like π
+# are kept — the utf-8-sig BOM on the CSV makes Excel read those right.)
+UNICODE_PUNCTUATION = {
+    "‐": "-", "‑": "-", "‒": "-", "–": "-",
+    "—": "-", "−": "-",
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+    " ": " ", " ": " ", " ": " ",
+}
+
+
 def strip_jats_markup(text):
     # CrossRef returns abstracts as JATS XML ("<jats:p>...</jats:p>"),
     # usually leading with a literal "Abstract" heading.
     text = re.sub(r"<[^>]+>", " ", text or "")
     text = html.unescape(text)
+    for char, replacement in UNICODE_PUNCTUATION.items():
+        text = text.replace(char, replacement)
     text = re.sub(r"\s+", " ", text).strip()
     return re.sub(r"^abstract\s*[:.]?\s*", "", text, flags=re.IGNORECASE)
 
 
-def first_sentences(text, count=2):
+# Abstracts open with background ("X has been sought after and
+# debated..."); the paper's actual contribution starts at a marker
+# sentence like "Here, we report...". That's the key information.
+CONTRIBUTION_MARKERS = re.compile(
+    r"\bhere,?\s+we\b"
+    r"|\bwe (?:report|introduce|show|demonstrate|develop|present|propose|reveal|achieve|establish)\b"
+    r"|\bin this (?:work|study|paper)\b"
+    r"|\bthis (?:work|study) (?:reports|introduces|shows|demonstrates|presents|reveals)\b",
+    re.IGNORECASE,
+)
+
+
+def summarize_abstract(text, count=2):
     if not text:
         return ""
     # Split only where a capital letter follows the terminator, so
     # decimals ("1.5 eV") don't end a sentence early.
     sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
+    for idx, sentence in enumerate(sentences):
+        if CONTRIBUTION_MARKERS.search(sentence):
+            return " ".join(sentences[idx:idx + count]).strip()
     return " ".join(sentences[:count]).strip()
+
+
+# Checked in order — first match wins, so the dominant topic of the
+# corpus comes first (a tandem-solar-with-LED-readout paper counts as
+# solar). Nothing matching any pattern is filed as "fundamental".
+CATEGORY_PATTERNS = (
+    ("solar-cell", re.compile(r"solar cell|photovoltaic|power conversion efficiency|\btandem\b", re.IGNORECASE)),
+    ("LED", re.compile(r"light[- ]emitting diode|electroluminescen|\bleds?\b", re.IGNORECASE)),
+    ("X-ray", re.compile(r"x[- ]?ray|scintillat|radiation detect", re.IGNORECASE)),
+    ("photodetector", re.compile(r"photodetector|photodiode", re.IGNORECASE)),
+    ("laser", re.compile(r"\blas(?:er|ing)\b", re.IGNORECASE)),
+)
+
+
+def classify_topic(title, abstract=""):
+    text = f"{title} {abstract}"
+    for label, pattern in CATEGORY_PATTERNS:
+        if pattern.search(text):
+            return label
+    return "fundamental"
 
 
 def fetch_crossref_metadata(doi, session, timeout):
@@ -247,11 +307,11 @@ def extract_pdf_contact_info(pdf_path, author_entries):
     return name, "; ".join(emails), affiliation
 
 
-def build_pdf_filename(entry, year, title, doi=""):
-    # "<entry>_<year>_<title>.pdf", degrading gracefully when a part is
-    # unknown — all the way down to the old DOI-based name if nothing
-    # else is available.
-    parts = [str(p).strip() for p in (entry, year) if str(p or "").strip()]
+def build_pdf_filename(entry, category, year, title, doi=""):
+    # "<entry>_<category>_<year>_<title>.pdf", degrading gracefully when
+    # a part is unknown — all the way down to the old DOI-based name if
+    # nothing else is available.
+    parts = [str(p).strip() for p in (entry, category, year) if str(p or "").strip()]
     title_part = sanitize_filename(title, max_len=80) if title else ""
     if title_part and title_part != "untitled":
         parts.append(title_part)
@@ -268,15 +328,26 @@ def enrich_record(record, entry_number, session, timeout, downloads_dir):
     record["Entry"] = str(entry_number)
     doi = record.get("DOI", "")
 
+    # A Key_Info without a contribution marker is either missing or the
+    # old background-style summary — re-fetch the abstract and upgrade
+    # it to the "Here, we report..." form when the abstract has one.
+    key_info_needs_upgrade = not CONTRIBUTION_MARKERS.search(record.get("Key_Info") or "")
+
     meta = {}
-    if doi and (not record.get("Year") or not record.get("Key_Info")):
+    if doi and (not record.get("Year") or key_info_needs_upgrade):
         meta = fetch_crossref_metadata(doi, session, timeout)
     if not record.get("Year"):
         record["Year"] = meta.get("year", "")
     if not record.get("Authors") and meta.get("authors"):
         record["Authors"] = "; ".join(a["name"] for a in meta["authors"])
-    if not record.get("Key_Info"):
-        record["Key_Info"] = first_sentences(meta.get("abstract", ""))
+    if key_info_needs_upgrade:
+        new_summary = summarize_abstract(meta.get("abstract", ""))
+        if new_summary:
+            record["Key_Info"] = new_summary
+    if not record.get("Category"):
+        record["Category"] = classify_topic(
+            record.get("Title", ""), meta.get("abstract", "") or record.get("Key_Info", "")
+        )
 
     pdf_path = record.get("PDF_Path", "")
     if pdf_path and os.path.exists(pdf_path):
@@ -294,7 +365,10 @@ def enrich_record(record, entry_number, session, timeout, downloads_dir):
 
         desired_path = os.path.join(
             downloads_dir,
-            build_pdf_filename(record["Entry"], record.get("Year", ""), record.get("Title", ""), doi),
+            build_pdf_filename(
+                record["Entry"], record.get("Category", ""), record.get("Year", ""),
+                record.get("Title", ""), doi,
+            ),
         )
         if os.path.abspath(desired_path) != os.path.abspath(pdf_path) and not os.path.exists(desired_path):
             try:
@@ -434,7 +508,8 @@ def main():
         record["Year"] = meta.get("year", "")
         if not record["Authors"] and meta.get("authors"):
             record["Authors"] = "; ".join(a["name"] for a in meta["authors"])
-        record["Key_Info"] = first_sentences(meta.get("abstract", ""))
+        record["Key_Info"] = summarize_abstract(meta.get("abstract", ""))
+        record["Category"] = classify_topic(title, meta.get("abstract", ""))
 
         unpaywall_data = query_unpaywall(doi, email, session, timeout)
         pdf_url = best_oa_pdf_url(unpaywall_data)
@@ -442,7 +517,7 @@ def main():
         if pdf_url:
             dest_path = os.path.join(
                 downloads_dir,
-                build_pdf_filename(record["Entry"], record["Year"], title, doi),
+                build_pdf_filename(record["Entry"], record["Category"], record["Year"], title, doi),
             )
             if download_pdf(pdf_url, dest_path, session, timeout):
                 record["Status"] = "downloaded"
