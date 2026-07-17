@@ -3,6 +3,7 @@ university's proxy/SSO and download them using your own institutional
 access. You'll be prompted for your credentials each run — nothing is
 stored on disk.
 """
+import base64
 import csv
 import getpass
 import os
@@ -202,7 +203,16 @@ def build_candidate_urls(row, config):
         # must stay on a proxied domain — the plain journal site is what
         # trips the publisher's bot detection. No LibKey, no bare doi.org
         # fallback here, even as a last resort.
-        publisher_host = urlparse(row.get("Publisher_URL", "") or "").netloc
+        publisher_url = row.get("Publisher_URL", "") or ""
+
+        # Stage 1 sometimes resolves straight to a PDF file (typical for
+        # supplementary-material DOIs like 10.1021/....s001, which point
+        # at .../suppl_file/xx.pdf). That resolved URL *is* the download
+        # — proxied, it beats any path we'd construct from templates.
+        if publisher_url.lower().split("?")[0].endswith(".pdf"):
+            candidates.append(apply_hostname_mangling_proxy(publisher_url, suffix))
+
+        publisher_host = urlparse(publisher_url).netloc
         known_url = build_proxy_pdf_url(doi, publisher_host, suffix)
         if known_url:
             candidates.append(known_url)
@@ -323,6 +333,63 @@ def start_pdf_response_capture(page):
     return wait
 
 
+def direct_pdf_url_variants(url):
+    # Wiley's reader at /doi/pdf/{doi} gets its actual bytes from
+    # /doi/pdfdirect/{doi} (confirmed in a HAR trace). Derive that URL
+    # from wherever the navigation landed; on platforms with no such
+    # endpoint the fetch just returns a non-PDF and is skipped.
+    variants = []
+    for reader_fragment in ("/doi/pdf/", "/doi/epdf/"):
+        if reader_fragment in url:
+            variants.append(url.replace(reader_fragment, "/doi/pdfdirect/", 1))
+    # The landed URL itself last: some platforms serve real PDF bytes at
+    # the reader URL when asked via XHR even though navigating to it
+    # shows a viewer page.
+    variants.append(url)
+    return variants
+
+
+def fetch_pdf_via_inpage_request(page, urls, dest_path, attempts=4, delay_ms=3000):
+    # Runs fetch() *inside* the page — exactly what the reader's own JS
+    # does — so the request is same-origin with the page's cookies and
+    # the same Sec-Fetch-Site/Mode/Dest and Referer values the HAR
+    # showed for the real request. A context.request fetch can't fully
+    # reproduce that. Retries with delays because the page may still be
+    # clearing its Cloudflare JS check for the first few seconds, during
+    # which the same URL returns a challenge response instead of bytes.
+    js = """async (url) => {
+        try {
+            const resp = await fetch(url, {credentials: 'include'});
+            if (!resp.ok) return null;
+            const ct = (resp.headers.get('content-type') || '').toLowerCase();
+            if (!ct.includes('pdf')) return null;
+            const bytes = new Uint8Array(await resp.arrayBuffer());
+            let binary = '';
+            const chunk = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunk) {
+                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+            }
+            return btoa(binary);
+        } catch (e) {
+            return null;
+        }
+    }"""
+    for attempt in range(attempts):
+        if attempt:
+            try:
+                page.wait_for_timeout(delay_ms)
+            except Exception:
+                return False
+        for url in urls:
+            try:
+                b64 = page.evaluate(js, url)
+            except Exception:
+                continue
+            if b64 and save_if_valid_pdf(base64.b64decode(b64), dest_path):
+                return True
+    return False
+
+
 def click_chrome_pdf_viewer_download_button(page, timeout=5000):
     # Chrome's built-in PDF viewer toolbar (the icon circled in the
     # user's screenshot) is a real button, just deeply nested in the
@@ -389,6 +456,8 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
     # fired well after this navigation settles.
     wait_for_pdf_body = start_pdf_response_capture(page)
 
+    url_before_nav = page.url
+
     try:
         with page.expect_download(timeout=download_wait_ms) as download_info:
             do_navigate()
@@ -398,11 +467,19 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
     except Exception:
         pass
 
-    # No "download" event doesn't mean no PDF — it may be arriving via a
-    # background XHR a reader page's own JS fires after clearing a bot
-    # check (confirmed via HAR trace), which the listener above has been
-    # waiting for this whole time.
-    body = wait_for_pdf_body(20000)
+    navigation_moved = page.url != url_before_nav
+
+    # Don't wait for the reader page's own JS to fetch the PDF — in an
+    # automated browser it often never does (its Cloudflare check can
+    # quietly fail, and then nothing fires). Make the exact same
+    # internal request ourselves, to the pdfdirect endpoint derived
+    # from where we landed.
+    if navigation_moved and fetch_pdf_via_inpage_request(page, direct_pdf_url_variants(page.url), dest_path):
+        return True
+
+    # Backstop: the passive listener may have caught the page doing the
+    # fetch itself while the attempts above were running.
+    body = wait_for_pdf_body(5000)
     if body and save_if_valid_pdf(body, dest_path):
         return True
 
@@ -423,6 +500,12 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
         except Exception:
             pass
 
+    # Only re-fetch the current URL if this navigation actually moved
+    # the page. If it silently failed, page.url is still the *previous*
+    # paper's page — fetching it here is how a wrong file once got
+    # downloaded and (correctly) rejected by the title check.
+    if not navigation_moved:
+        return False
     return fetch_pdf_if_thats_what_this_url_is(context, page.url, dest_path, nav_timeout)
 
 
