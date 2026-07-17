@@ -59,8 +59,11 @@ ANSWER_SYSTEM = (
 )
 
 
-DEFAULT_GGUF_REPO = "Qwen/Qwen2.5-7B-Instruct-GGUF"
-DEFAULT_GGUF_FILE = "*q4_k_m.gguf"
+# bartowski's repo rather than Qwen's own: same model, but as a single
+# file — Qwen's official GGUF repo splits this quantization into parts
+# ("...-00001-of-00002.gguf"), which the simple download path can't use.
+DEFAULT_GGUF_REPO = "bartowski/Qwen2.5-7B-Instruct-GGUF"
+DEFAULT_GGUF_FILE = "*Q4_K_M.gguf"
 
 
 class OllamaLLM:

@@ -87,5 +87,5 @@ assistant:
   # installed instead (pip install llama-cpp-python --extra-index-url
   # https://abetlen.github.io/llama-cpp-python/whl/cpu). The model file
   # downloads once from HuggingFace and is cached.
-  gguf_repo: "Qwen/Qwen2.5-7B-Instruct-GGUF"
-  gguf_file: "*q4_k_m.gguf"
+  gguf_repo: "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  gguf_file: "*Q4_K_M.gguf"

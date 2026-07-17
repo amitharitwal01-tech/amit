@@ -10,8 +10,8 @@ from llama_cpp import Llama
 
 print("Loading the model (first run downloads ~4.7 GB — watch for a progress bar)...")
 llm = Llama.from_pretrained(
-    repo_id="Qwen/Qwen2.5-7B-Instruct-GGUF",
-    filename="*q4_k_m.gguf",
+    repo_id="bartowski/Qwen2.5-7B-Instruct-GGUF",
+    filename="*Q4_K_M.gguf",
     n_ctx=8192,
     verbose=False,
 )
