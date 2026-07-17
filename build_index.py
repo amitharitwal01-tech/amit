@@ -409,21 +409,17 @@ def run_indexing(rebuild=False):
     print("      python build_index.py --match-figure path\\to\\your_image.png")
 
 
-def run_search(query, top_k=5, kind=None):
-    db = open_db()
+def retrieve(db, embedder, query, top_k=5, kind=None):
+    # The reusable heart of every search mode (and of ask_library.py):
+    # returns the top passages as dicts instead of printing them.
     kind_filter = "WHERE c.kind = 'figure'" if kind == "figure" else ""
     rows = db.execute(
-        f"""SELECT c.text, c.page, c.embedding, p.entry, p.title, p.year, p.category
+        f"""SELECT c.text, c.page, c.embedding, p.entry, p.title, p.year, p.category, p.doi
             FROM chunks c JOIN papers p ON p.doi = c.doi {kind_filter}"""
     ).fetchall()
     if not rows:
-        sys.exit(
-            "No matching index entries — run  python build_index.py  first."
-            if kind is None else
-            "No figure captions in the index yet — run  python build_index.py  first."
-        )
+        return []
 
-    embedder = get_embedder()
     query_vector = np.array(list(embedder.query_embed(query)), dtype=np.float32)[0]
     norm = np.linalg.norm(query_vector)
     if norm:
@@ -433,12 +429,32 @@ def run_search(query, top_k=5, kind=None):
     scores = matrix @ query_vector
     best = np.argsort(scores)[::-1][:top_k]
 
-    print(f"Top {len(best)} passages for: {query!r}")
-    for rank, idx in enumerate(best, 1):
-        text, page, _, entry, title, year, category = rows[idx]
+    return [
+        {
+            "text": rows[i][0], "page": rows[i][1], "entry": rows[i][3],
+            "title": rows[i][4], "year": rows[i][5], "category": rows[i][6],
+            "doi": rows[i][7], "score": float(scores[i]),
+        }
+        for i in best
+    ]
+
+
+def run_search(query, top_k=5, kind=None):
+    db = open_db()
+    embedder = get_embedder()
+    results = retrieve(db, embedder, query, top_k, kind)
+    if not results:
+        sys.exit(
+            "No matching index entries — run  python build_index.py  first."
+            if kind is None else
+            "No figure captions in the index yet — run  python build_index.py  first."
+        )
+
+    print(f"Top {len(results)} passages for: {query!r}")
+    for rank, r in enumerate(results, 1):
         print()
-        print(f"--- {rank}. [Entry {entry} | {year} | {category}] {title[:80]}  (p.{page}, score {scores[idx]:.2f})")
-        print(text)
+        print(f"--- {rank}. [Entry {r['entry']} | {r['year']} | {r['category']}] {r['title'][:80]}  (p.{r['page']}, score {r['score']:.2f})")
+        print(r["text"])
 
 
 def run_match_figure(image_path, top_k=5):
