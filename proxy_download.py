@@ -478,13 +478,19 @@ def fetch_pdf_if_thats_what_this_url_is(context, url, dest_path, timeout=20000):
     return False
 
 
-def page_is_showing_pdf(page, timeout_ms=8000):
+def page_is_showing_pdf(page, timeout_ms=3000):
     # When Chrome's built-in viewer is displaying a PDF (rather than an
-    # HTML page), the document itself reports this. Actively waits
-    # rather than checking once — there can be a brief redirect/loading
-    # gap between the navigation resolving and the PDF viewer taking
-    # over, and checking too early reads "text/html" and gives up on a
-    # page that was about to be the right one.
+    # HTML page), the document itself reports this. Instant check
+    # first (the common case either way), then a short active wait —
+    # there can be a brief redirect/loading gap between the navigation
+    # resolving and the PDF viewer taking over. The wait is kept short
+    # because on ordinary HTML pages it burns its full timeout for
+    # every failed candidate.
+    try:
+        if page.evaluate("document.contentType") == "application/pdf":
+            return True
+    except Exception:
+        pass
     try:
         page.wait_for_function("document.contentType === 'application/pdf'", timeout=timeout_ms)
         return True
@@ -705,10 +711,19 @@ def goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout,
         except Exception:
             pass
 
+        navigation_moved = page.url != url_before_nav
+
+        # Fast-fail on walls: a bot-challenge or login page can never
+        # yield a PDF, so don't spend this candidate's remaining waits
+        # (~25s of download waits, fetch retries and viewer checks) on
+        # one. The caller's own wall check then decides to skip the
+        # paper. (When the navigation became a file download instead,
+        # the page didn't move and this check passes through.)
+        if navigation_moved and describe_manual_step_needed(page):
+            return False
+
         if download_landed(download_wait_ms):
             return True
-
-        navigation_moved = page.url != url_before_nav
 
         # Don't wait for the reader page's own JS to fetch the PDF — in
         # an automated browser it often never does (its Cloudflare check
