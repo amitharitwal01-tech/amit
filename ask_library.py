@@ -242,12 +242,72 @@ def build_references(db, entries):
     return refs
 
 
+def export_question_pack(question, db, embedder, top_k):
+    # The slow part of local answering is the AI generation, not the
+    # retrieval — so do only the fast part here and hand the writing to
+    # Claude: everything it needs (question, sub-questions, evidence
+    # passages with citation labels, references) goes into one small
+    # file to upload in chat. Decomposition uses the rule-based split —
+    # no local AI involved at any point, so this finishes in seconds.
+    if question_needs_decomposition(question):
+        subs = split_into_subquestions(question)
+    else:
+        subs = [question.strip()]
+
+    lines = [
+        "# Question pack",
+        "",
+        "## Instructions for the writer",
+        "",
+        "Answer the question below using ONLY the source passages included in "
+        "this pack. Every factual claim must cite its source as [Entry N, p.X], "
+        "matching the passage labels. If the passages don't contain enough to "
+        "answer some part, say so explicitly rather than answering from general "
+        "knowledge. Write precise scientific prose.",
+        "",
+        f"**Question:** {question}",
+        "",
+    ]
+
+    used_entries = set()
+    for i, sub in enumerate(subs, 1):
+        print(f"[{i}/{len(subs)}] retrieving ...")
+        results = build_index.retrieve(db, embedder, sub, top_k=top_k)
+        lines += [f"## Evidence for part {i}: {sub}", ""]
+        if not results:
+            lines += ["_No relevant passages found in the library._", ""]
+            continue
+        for r in results:
+            used_entries.add(int(r["entry"]) if str(r["entry"]).isdigit() else 0)
+            lines.append(f"**[Entry {r['entry']}, p.{r['page']}]** ({r['year']}, {r['category']}) {r['title'][:90]}")
+            lines.append(f"> {r['text']}")
+            lines.append("")
+
+    refs = build_references(db, sorted(e for e in used_entries if e))
+    if refs:
+        lines += ["## References catalog", ""] + [f"- {r}" for r in refs]
+
+    os.makedirs(ANSWERS_DIR, exist_ok=True)
+    out_path = os.path.join(ANSWERS_DIR, f"question_pack_{datetime.now():%Y%m%d_%H%M%S}.md")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print()
+    print(f"Question pack written to {out_path} ({os.path.getsize(out_path) / 1024:.0f} KB).")
+    print("Upload that file to Claude in chat and it will write the answer.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ask your paper library a question (or a whole paragraph).")
     parser.add_argument("question", nargs="*", help="the question; quote it, or use --file")
     parser.add_argument("--file", help="read the question from a text file")
     parser.add_argument("--top", type=int, default=5, help="passages retrieved per sub-question")
     parser.add_argument("--no-ai", action="store_true", help="skip the local AI; verbatim passages only")
+    parser.add_argument(
+        "--pack", action="store_true",
+        help="don't answer locally: export the question plus retrieved "
+             "passages as a small file to upload to Claude, which writes "
+             "the answer there (fast on any machine)",
+    )
     args = parser.parse_args()
 
     if args.file:
@@ -263,6 +323,10 @@ def main():
     if db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0:
         sys.exit("The library index is empty — run  python build_index.py  first.")
     embedder = build_index.get_embedder()
+
+    if args.pack:
+        export_question_pack(question, db, embedder, args.top)
+        return
 
     llm = None
     if not args.no_ai:
