@@ -12,6 +12,9 @@ Usage:
     python export_catalog.py                          # brief: key info only
     python export_catalog.py --full                   # abstracts + captions
     python export_catalog.py --category solar-cell --since 2024 --full
+    python export_catalog.py --years 2024             # exactly one year
+    python export_catalog.py --years 2020,2023-2025   # any mix of years/ranges
+    python export_catalog.py --category solar-cell,LED  # several categories
     python export_catalog.py --status downloaded      # only papers with PDFs
 
 Filter to the topic of the chapter you're planning — a focused catalog
@@ -28,6 +31,21 @@ from doi_resolver import load_config, load_tracking
 from build_index import DB_PATH
 
 DOWNLOADED_STATUSES = ("downloaded", "downloaded_via_proxy")
+
+
+def parse_years(spec):
+    # "2024" -> {2024};  "2020,2023-2025" -> {2020, 2023, 2024, 2025}
+    years = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            years.update(range(int(start), int(end) + 1))
+        else:
+            years.add(int(part))
+    return years
 
 
 def load_captions_by_doi():
@@ -53,9 +71,10 @@ def load_captions_by_doi():
 def main():
     parser = argparse.ArgumentParser(description="Export a library catalog for Claude.")
     parser.add_argument("--full", action="store_true", help="include abstracts and figure/table captions")
-    parser.add_argument("--category", help="only this category (e.g. solar-cell)")
+    parser.add_argument("--category", help="one or more categories, comma-separated (e.g. solar-cell,LED)")
     parser.add_argument("--since", type=int, help="only papers from this year onward")
     parser.add_argument("--until", type=int, help="only papers up to this year")
+    parser.add_argument("--years", help="specific year(s): 2024, or 2020,2023-2025 (mix of years and ranges)")
     parser.add_argument("--status", help="only rows with this status (e.g. downloaded)")
     parser.add_argument("--out", help="output file (default catalog_<timestamp>.md)")
     args = parser.parse_args()
@@ -73,13 +92,18 @@ def main():
                 continue
         elif status not in DOWNLOADED_STATUSES:
             continue  # by default, catalog only what's actually in the library
-        if args.category and (row.get("Category", "") or "").lower() != args.category.lower():
-            continue
+        if args.category:
+            wanted = {c.strip().lower() for c in args.category.split(",") if c.strip()}
+            if (row.get("Category", "") or "").lower() not in wanted:
+                continue
         year = row.get("Year", "")
         if args.since and (not year.isdigit() or int(year) < args.since):
             continue
         if args.until and (not year.isdigit() or int(year) > args.until):
             continue
+        if args.years:
+            if not year.isdigit() or int(year) not in parse_years(args.years):
+                continue
         rows.append(row)
 
     if not rows:
