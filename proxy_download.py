@@ -1157,7 +1157,16 @@ def main():
         print("Nothing needs the proxy — every paper was already resolved in Stage 1.")
         return
 
-    print(f"{len(pending)} paper(s) need the university proxy.")
+    limits_cfg = config.get("limits", {}) or {}
+    stage2_limit = int(limits_cfg.get("stage2_papers_per_run", 1000) or 0)
+    if stage2_limit and len(pending) > stage2_limit:
+        print(
+            f"{len(pending)} paper(s) need the university proxy — handling the "
+            f"first {stage2_limit} this run (the next run continues with the rest)."
+        )
+        pending = pending[:stage2_limit]
+    else:
+        print(f"{len(pending)} paper(s) need the university proxy.")
     login_cfg = config.get("login", {})
     username, password = get_credentials(login_cfg)
 

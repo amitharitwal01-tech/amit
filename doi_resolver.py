@@ -469,9 +469,14 @@ def main():
     needs_proxy_count = 0
     total = len(df)
 
+    limits_cfg = config.get("limits", {}) or {}
+    stage1_limit = int(limits_cfg.get("stage1_papers_per_run", 2000) or 0)
+
     error_count = 0
     started = time.monotonic()
     handled = 0
+    fresh_processed = 0
+    limit_reached = False
 
     try:
         for i, row in df.iterrows():
@@ -522,6 +527,14 @@ def main():
                 if status == "no_doi_found" and not existing_doi:
                     print(f"[{i + 1}/{total}{eta}] {title[:70]!r} — still no DOI, skipping")
                     continue
+
+            # The per-run limit counts only fresh lookups — skipped
+            # rows fly by for free, so each run handles the *next*
+            # stage1_papers_per_run unprocessed papers.
+            if stage1_limit and fresh_processed >= stage1_limit:
+                limit_reached = True
+                break
+            fresh_processed += 1
 
             print(f"[{i + 1}/{total}{eta}] {title[:70]!r}", end=" ... ", flush=True)
 
@@ -604,6 +617,9 @@ def main():
         save_tracking(tracking_path, tracking)
 
     print()
+    if limit_reached:
+        print(f"Per-run limit reached ({stage1_limit} fresh papers this run) — "
+              "run the script again to continue with the rest.")
     print(f"Done. {downloaded_count} downloaded directly, {needs_proxy_count} need the university proxy"
           + (f", {error_count} error(s) to retry on the next run" if error_count else "") + ".")
     print(f"See {tracking_path} for the full breakdown.")

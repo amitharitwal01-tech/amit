@@ -91,3 +91,11 @@ assistant:
   # downloads once from HuggingFace and is cached.
   gguf_repo: "bartowski/Qwen2.5-7B-Instruct-GGUF"
   gguf_file: "*Q4_K_M.gguf"
+
+# How many papers each run handles before stopping cleanly — the next
+# run continues where the previous one left off. Stage 1 counts fresh
+# lookups (already-decided rows are skipped for free); Stage 2 counts
+# papers attempted in the browser. Set 0 for no limit.
+limits:
+  stage1_papers_per_run: 2000
+  stage2_papers_per_run: 1000
