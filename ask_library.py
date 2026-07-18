@@ -117,7 +117,9 @@ class LlamaCppLLM:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
-            max_tokens=1200,
+            # A grounded per-sub-question answer fits well under this;
+            # on CPU every extra token is real waiting time.
+            max_tokens=800,
         )
         return out["choices"][0]["message"]["content"].strip()
 
@@ -164,6 +166,16 @@ def split_into_subquestions(question):
         if len(part) >= 40:
             cleaned.append(part[:300])
     return cleaned[:8] or [question.strip()[:300]]
+
+
+def question_needs_decomposition(question):
+    # Each sub-question costs a full local-AI generation — minutes on
+    # CPU — so splitting is reserved for genuinely composite queries
+    # (paragraphs, multiple sentences/questions). A basic question is
+    # answered directly, once.
+    stripped = question.strip()
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", stripped) if s]
+    return len(stripped) > 200 or stripped.count("?") > 1 or len(sentences) > 2
 
 
 def decompose_question(question, llm):
@@ -234,7 +246,7 @@ def main():
     parser = argparse.ArgumentParser(description="Ask your paper library a question (or a whole paragraph).")
     parser.add_argument("question", nargs="*", help="the question; quote it, or use --file")
     parser.add_argument("--file", help="read the question from a text file")
-    parser.add_argument("--top", type=int, default=6, help="passages retrieved per sub-question")
+    parser.add_argument("--top", type=int, default=5, help="passages retrieved per sub-question")
     parser.add_argument("--no-ai", action="store_true", help="skip the local AI; verbatim passages only")
     args = parser.parse_args()
 
@@ -266,10 +278,14 @@ def main():
                 "https://abetlen.github.io/llama-cpp-python/whl/cpu"
             )
 
-    subs = decompose_question(question, llm)
-    print(f"\nDetected {len(subs)} sub-question(s):")
-    for i, sub in enumerate(subs, 1):
-        print(f"  {i}. {sub[:100]}{'...' if len(sub) > 100 else ''}")
+    if question_needs_decomposition(question):
+        subs = decompose_question(question, llm)
+        print(f"\nDetected {len(subs)} sub-question(s):")
+        for i, sub in enumerate(subs, 1):
+            print(f"  {i}. {sub[:100]}{'...' if len(sub) > 100 else ''}")
+    else:
+        subs = [question.strip()]
+        print("\nSingle question — answering directly, no decomposition.")
 
     sections = []
     used_entries = set()

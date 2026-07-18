@@ -96,6 +96,9 @@ assistant:
   # installed instead (pip install llama-cpp-python --extra-index-url
   # https://abetlen.github.io/llama-cpp-python/whl/cpu). The model file
   # downloads once from HuggingFace and is cached.
+  # For a faster (though somewhat shallower) assistant on CPU-only
+  # machines, switch to the 3B model: replace 7B with 3B in gguf_repo
+  # below (roughly 2-3x faster answers; the file downloads once).
   gguf_repo: "bartowski/Qwen2.5-7B-Instruct-GGUF"
   gguf_file: "*Q4_K_M.gguf"
 
