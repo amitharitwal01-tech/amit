@@ -235,18 +235,150 @@ def attempt_login(page, login_cfg, username, password, fallback_url=None):
     return True
 
 
-def ensure_logged_in(page, login_cfg, username, password, fallback_url=None):
-    logged_in = False
-    try:
-        logged_in = attempt_login(page, login_cfg, username, password, fallback_url)
-    except Exception as e:
-        print(f"Automatic login hit an error: {e}")
+# Selector pools for walking arbitrary SSO login pages without
+# configuration. Deliberately no bare input[type='text'] — that would
+# match search boxes on ordinary article pages.
+LOGIN_USERNAME_SELECTORS = (
+    "input[name='loginfmt']",          # Microsoft 365
+    "input[type='email']",
+    "input[name='j_username']",        # Shibboleth
+    "input[name*='user' i]",
+    "input[id*='user' i]",
+)
+LOGIN_SUBMIT_SELECTORS = (
+    "#idSIButton9",                    # Microsoft 365 Next/Sign in/Yes
+    "button[name='_eventId_proceed']", # Shibboleth
+    "button[type='submit']",
+    "input[type='submit']",
+)
 
-    if not logged_in:
-        input(
-            "Please finish logging in by hand in the browser window, then "
-            "come back here and press Enter to continue..."
-        )
+
+def first_visible(page, selectors):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            for i in range(min(locator.count(), 5)):
+                if locator.nth(i).is_visible():
+                    return locator.nth(i)
+        except Exception:
+            continue
+    return None
+
+
+def auto_login_on_page(page, username, password, max_steps=8):
+    # Walks a multi-step SSO flow (Microsoft-365 style: email -> Next ->
+    # password -> Sign in -> "Stay signed in?" -> Yes; Shibboleth-style
+    # single form too), filling the saved credentials at each step.
+    # Returns True once it has submitted the password.
+    submitted_password = False
+    for _ in range(max_steps):
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=12000)
+        except Exception:
+            pass
+        page.wait_for_timeout(1500)  # SSO pages animate/redirect between steps
+
+        password_field = first_visible(page, ("input[type='password']",))
+        if password_field:
+            try:
+                password_field.fill(password, timeout=4000)
+            except Exception:
+                return submitted_password
+            submit = first_visible(page, LOGIN_SUBMIT_SELECTORS)
+            try:
+                submit.click(timeout=4000) if submit else password_field.press("Enter")
+            except Exception:
+                pass
+            submitted_password = True
+            continue
+
+        username_field = first_visible(page, LOGIN_USERNAME_SELECTORS)
+        if username_field:
+            try:
+                if not username_field.input_value():
+                    username_field.fill(username, timeout=4000)
+            except Exception:
+                return submitted_password
+            submit = first_visible(page, LOGIN_SUBMIT_SELECTORS)
+            try:
+                submit.click(timeout=4000) if submit else username_field.press("Enter")
+            except Exception:
+                pass
+            continue
+
+        # A lone submit button after the password went in is the
+        # "Stay signed in?" page — accept it so the profile keeps the
+        # session across runs.
+        if submitted_password:
+            stay_signed_in = first_visible(page, ("#idSIButton9", "input[type='submit']"))
+            if stay_signed_in:
+                try:
+                    stay_signed_in.click(timeout=3000)
+                except Exception:
+                    pass
+                continue
+
+        return submitted_password
+    return submitted_password
+
+
+def wait_for_login_to_settle(page, timeout_s=90):
+    # After submitting credentials, SSO bounces through redirects — and
+    # possibly a phone-approval (MFA) step that only the user's phone
+    # can complete. Wait until the browser lands somewhere that isn't a
+    # login/auth page; the generous timeout leaves room to tap Approve.
+    auth_markers = ("login", "auth", "sso", "microsoftonline", "duosecurity", "mfa")
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            url = page.url.lower()
+            if not looks_like_login_page(page) and not any(m in url for m in auth_markers):
+                return True
+        except Exception:
+            pass
+        try:
+            page.wait_for_timeout(1000)
+        except Exception:
+            return False
+    return False
+
+
+def ensure_logged_in(page, login_cfg, username, password, fallback_url=None):
+    if login_cfg.get("proxy_login_url"):
+        # Explicitly configured login page + selectors — original path.
+        try:
+            if attempt_login(page, login_cfg, username, password, fallback_url):
+                return
+        except Exception as e:
+            print(f"Automatic login hit an error: {e}")
+    elif fallback_url:
+        print("Opening the first paper's page to establish the proxy session...")
+        try:
+            page.goto(fallback_url, wait_until="domcontentloaded", timeout=45000)
+        except Exception:
+            pass
+        if auto_login_on_page(page, username, password):
+            print("Filled in the saved login details automatically...")
+            if wait_for_login_to_settle(page):
+                print("Signed in.")
+                return
+            print(
+                "The sign-in didn't settle by itself — if your phone is "
+                "asking for approval, tap it now."
+            )
+        else:
+            try:
+                if not looks_like_login_page(page):
+                    # No login form appeared at all — the saved browser
+                    # profile still holds a valid session. Nothing to do.
+                    return
+            except Exception:
+                pass
+
+    input(
+        "Please finish logging in by hand in the browser window, then "
+        "come back here and press Enter to continue..."
+    )
 
 
 def build_candidate_urls(row, config):
