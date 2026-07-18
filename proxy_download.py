@@ -11,7 +11,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import yaml
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -248,6 +248,19 @@ def build_candidate_urls(row, config):
         # — proxied, it beats any path we'd construct from templates.
         if publisher_url.lower().split("?")[0].endswith(".pdf"):
             candidates.append(apply_hostname_mangling_proxy(publisher_url, suffix))
+
+        # Elsevier/ScienceDirect (10.1016): PDF URLs are built from the
+        # article's PII — the ID in Stage 1's resolved URL — not from
+        # the DOI, so the generic path templates can't cover it.
+        # /pdfft?...download=true is the link ScienceDirect's own
+        # "Download PDF" button uses (confirmed in a failure snapshot).
+        pii_match = re.search(r"/pii/(S[0-9A-Z]{15,18})", publisher_url, re.IGNORECASE)
+        if "sciencedirect.com" in publisher_url.lower() and pii_match:
+            candidates.append(apply_hostname_mangling_proxy(
+                f"https://www.sciencedirect.com/science/article/pii/{pii_match.group(1)}"
+                "/pdfft?isDTMRedir=true&download=true",
+                suffix,
+            ))
 
         publisher_host = urlparse(publisher_url).netloc
         known_url = build_proxy_pdf_url(doi, publisher_host, suffix)
@@ -651,6 +664,7 @@ def looks_like_bot_challenge_page(page):
 NO_SUBSCRIPTION_PHRASES = (
     "purchase instant access",
     "purchase access",
+    "purchase pdf",  # ScienceDirect's wording when the article isn't licensed
     "purchase this article",
     "buy this article",
     "buy article",
@@ -697,6 +711,42 @@ def find_meta_pdf_url(page):
     # publisher platforms embed in <head> regardless of how their on-page
     # download UI happens to be built that week.
     return find_meta_content(page, "citation_pdf_url")
+
+
+PDF_HREF_PATTERN = re.compile(r"pdfft|/pdfdirect/|/epdf/|\.pdf(?:$|\?)", re.IGNORECASE)
+
+
+def find_pdf_link_by_href(page):
+    # Publisher-agnostic: an anchor whose href points at a PDF-serving
+    # endpoint — ScienceDirect's "/pdfft?..." View PDF link (confirmed
+    # present in a real failure snapshot), Wiley's /pdfdirect/, generic
+    # ".pdf" links. Matching on the href catches links whose visible
+    # label ("View PDF", an icon, ...) the name-based layers miss.
+    try:
+        anchors = page.query_selector_all("a[href]")
+    except Exception:
+        return None
+    for anchor in anchors:
+        try:
+            href = anchor.get_attribute("href") or ""
+        except Exception:
+            continue
+        if not PDF_HREF_PATTERN.search(href):
+            continue
+        label_parts = []
+        for getter in (
+            lambda: anchor.inner_text(),
+            lambda: anchor.get_attribute("aria-label"),
+            lambda: anchor.get_attribute("title"),
+        ):
+            try:
+                label_parts.append(getter() or "")
+            except Exception:
+                pass
+        if SUPPLEMENTARY_HINT_PATTERN.search(" ".join(label_parts)):
+            continue
+        return urljoin(page.url, href)
+    return None
 
 
 def find_embedded_pdf_url(page):
@@ -976,6 +1026,12 @@ def try_download_paper(
 
     # Layer 2: scholarly metadata embedded in <head>, if the page has it.
     if try_meta_pdf_with_fulltext_referer(page, context, dest_path):
+        return True
+
+    # Layer 2b: a link on the page whose href is itself a PDF-serving
+    # endpoint (ScienceDirect's "View PDF"/pdfft link, generic .pdf).
+    href_url = find_pdf_link_by_href(page)
+    if href_url and fetch_or_navigate_to_pdf(page, context, href_url, dest_path):
         return True
 
     # Layer 3: an embedded PDF viewer (<embed>/<iframe>) rather than a link.
