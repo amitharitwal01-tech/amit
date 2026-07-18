@@ -168,11 +168,12 @@ def chunk_page_text(text):
 
 
 FIGURE_CAPTION_START = re.compile(r"^(?:Fig(?:ure)?|Scheme)\.?\s*\d+", re.IGNORECASE)
+TABLE_CAPTION_START = re.compile(r"^Table\.?\s*\d+", re.IGNORECASE)
 
 
-def extract_figure_captions(page_text):
-    # Captions start a line with "Figure N" / "Fig. N" / "Scheme N" and
-    # run until a blank line or the next caption. In-text mentions
+def extract_captions(page_text, start_pattern):
+    # Captions start a line with "Figure N" / "Table N" / "Scheme N"
+    # and run until a blank line or the next caption. In-text mentions
     # ("as shown in Figure 2a...") sit mid-line, so anchoring to line
     # starts keeps them out.
     captions = []
@@ -180,13 +181,13 @@ def extract_figure_captions(page_text):
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        if FIGURE_CAPTION_START.match(line):
+        if start_pattern.match(line):
             caption = line
             j = i + 1
             while (
                 j < len(lines)
                 and lines[j].strip()
-                and not FIGURE_CAPTION_START.match(lines[j].strip())
+                and not start_pattern.match(lines[j].strip())
                 and len(caption) < 600
             ):
                 caption += " " + lines[j].strip()
@@ -197,6 +198,10 @@ def extract_figure_captions(page_text):
         else:
             i += 1
     return captions
+
+
+def extract_figure_captions(page_text):
+    return extract_captions(page_text, FIGURE_CAPTION_START)
 
 
 def extract_figures(pdf_path):
@@ -324,6 +329,23 @@ def index_paper(db, embedder, image_embedder, row):
     )
 
     figure_count = index_figures(db, embedder, image_embedder, key, pdf_path)
+
+    # Table captions become their own labeled index entries too — a
+    # table is often exactly the citable comparison a review needs, and
+    # the [Table, p.N] label survives into research packs.
+    table_chunks = []
+    for number, text in pages:
+        for caption in extract_captions(text, TABLE_CAPTION_START):
+            table_chunks.append((number, f"[Table, p.{number}] {caption}"))
+    if table_chunks:
+        vectors = embed_passages(embedder, [t for _, t in table_chunks])
+        db.executemany(
+            "INSERT INTO chunks(doi, page, text, embedding, kind) VALUES (?, ?, ?, ?, 'table')",
+            [
+                (key, number, text, vector.tobytes())
+                for (number, text), vector in zip(table_chunks, vectors)
+            ],
+        )
 
     db.execute(
         """INSERT OR REPLACE INTO papers

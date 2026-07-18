@@ -19,7 +19,7 @@ TRACKING_FIELDS = [
     "Entry", "Title", "Authors", "DOI", "Year", "Category", "Status", "PDF_Path",
     "Source_URL", "Publisher_URL",
     "Corresponding_Author", "Corresponding_Email", "Institute",
-    "Key_Info", "Notes", "Last_Updated",
+    "Key_Info", "Abstract", "Notes", "Last_Updated",
 ]
 
 DOI_PREFIXES_TO_STRIP = (
@@ -396,7 +396,7 @@ def enrich_record(record, entry_number, session, timeout, downloads_dir):
     key_info_needs_upgrade = not CONTRIBUTION_MARKERS.search(record.get("Key_Info") or "")
 
     meta = {}
-    if doi and (not record.get("Year") or key_info_needs_upgrade):
+    if doi and (not record.get("Year") or key_info_needs_upgrade or not record.get("Abstract")):
         meta = fetch_crossref_metadata(doi, session, timeout)
     if not record.get("Year"):
         record["Year"] = meta.get("year", "")
@@ -406,6 +406,10 @@ def enrich_record(record, entry_number, session, timeout, downloads_dir):
         new_summary = summarize_abstract(meta.get("abstract", ""))
         if new_summary:
             record["Key_Info"] = new_summary
+    if not record.get("Abstract"):
+        # The sentinel stops this row triggering a CrossRef re-fetch on
+        # every future run when the publisher simply deposits no abstract.
+        record["Abstract"] = meta.get("abstract", "") or "(no abstract deposited with CrossRef)"
     if not record.get("Category"):
         record["Category"] = classify_topic(
             record.get("Title", ""), meta.get("abstract", "") or record.get("Key_Info", "")
@@ -634,6 +638,7 @@ def main():
                 if not record["Authors"] and meta.get("authors"):
                     record["Authors"] = "; ".join(a["name"] for a in meta["authors"])
                 record["Key_Info"] = summarize_abstract(meta.get("abstract", ""))
+                record["Abstract"] = meta.get("abstract", "") or "(no abstract deposited with CrossRef)"
                 record["Category"] = classify_topic(title, meta.get("abstract", ""))
 
                 unpaywall_data = query_unpaywall(doi, email, session, timeout)
