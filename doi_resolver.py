@@ -438,6 +438,15 @@ def download_pdf(url, dest_path, session, timeout):
         return False
 
 
+def format_remaining(seconds):
+    if seconds < 60:
+        return "<1m"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"~{minutes}m"
+    return f"~{minutes // 60}h {minutes % 60:02d}m"
+
+
 def main():
     config = load_config()
     df, doi_col, title_col, authors_col = load_excel(config)
@@ -461,6 +470,8 @@ def main():
     total = len(df)
 
     error_count = 0
+    started = time.monotonic()
+    handled = 0
 
     try:
         for i, row in df.iterrows():
@@ -469,6 +480,15 @@ def main():
             # from the saved sheet.
             if i and i % 25 == 0:
                 save_tracking(tracking_path, tracking)
+
+            # Remaining-time estimate from this session's own pace —
+            # skipped rows are near-instant and full lookups a few
+            # seconds, so the average self-corrects as the mix changes.
+            eta = ""
+            if handled >= 5:
+                per_row = (time.monotonic() - started) / handled
+                eta = f", {format_remaining(per_row * (total - i))} left"
+            handled += 1
 
             title = str(row[title_col]).strip()
             authors = str(row[authors_col]).strip() if authors_col else ""
@@ -486,7 +506,7 @@ def main():
                 # to the article's own DOI) means the saved file was the
                 # wrong document, so that paper goes through again.
                 if same_doi and status in ("downloaded", "downloaded_via_proxy"):
-                    print(f"[{i + 1}/{total}] {title[:70]!r} — already downloaded, updating info columns")
+                    print(f"[{i + 1}/{total}{eta}] {title[:70]!r} — already downloaded, updating info columns")
                     enrich_record(tracked, i + 1, session, timeout, downloads_dir)
                     downloaded_count += 1
                     continue
@@ -494,16 +514,16 @@ def main():
                 # rows already checked and waiting for Stage 2 don't
                 # need their lookups repeated.
                 if same_doi and status == "needs_proxy":
-                    print(f"[{i + 1}/{total}] {title[:70]!r} — already checked (needs proxy), skipping")
+                    print(f"[{i + 1}/{total}{eta}] {title[:70]!r} — already checked (needs proxy), skipping")
                     needs_proxy_count += 1
                     continue
                 # A title that had no DOI last time won't gain one by
                 # asking again — unless the Excel now provides it.
                 if status == "no_doi_found" and not existing_doi:
-                    print(f"[{i + 1}/{total}] {title[:70]!r} — still no DOI, skipping")
+                    print(f"[{i + 1}/{total}{eta}] {title[:70]!r} — still no DOI, skipping")
                     continue
 
-            print(f"[{i + 1}/{total}] {title[:70]!r}", end=" ... ", flush=True)
+            print(f"[{i + 1}/{total}{eta}] {title[:70]!r}", end=" ... ", flush=True)
 
             record = {field: "" for field in TRACKING_FIELDS}
             record.update({
