@@ -144,13 +144,17 @@ def resolve_publisher_url(doi, session, timeout):
     # redirect itself is public, only the content behind it is gated.
     # Streamed and closed immediately so we get the final URL without
     # downloading the whole landing page body.
+    # except Exception, not just RequestException: some redirect chains
+    # emit genuinely malformed URLs (seen live: a Web of Science login
+    # loop producing host "www.webofknowledge.comundefinednull..."),
+    # which raises a urllib3 parse error that requests doesn't wrap.
     try:
         resp = session.get(
             f"https://doi.org/{doi}", timeout=timeout, allow_redirects=True, stream=True
         )
         resp.close()
         return resp.url or ""
-    except requests.RequestException:
+    except Exception:
         return ""
 
 
@@ -456,98 +460,132 @@ def main():
     needs_proxy_count = 0
     total = len(df)
 
-    for i, row in df.iterrows():
-        title = str(row[title_col]).strip()
-        authors = str(row[authors_col]).strip() if authors_col else ""
-        existing_doi = normalize_doi(row[doi_col]) if doi_col else ""
+    error_count = 0
 
-        tracked = tracking.get(title)
-        if tracked and tracked["Status"] in ("downloaded", "downloaded_via_proxy"):
-            # Skip papers already downloaded (by either stage) — but only
-            # if the DOI we'd use now matches the one that download was
-            # actually for. A DOI that normalization now corrects (e.g. a
-            # supplementary .s001 component stripped to the article's own
-            # DOI) means the saved file was the wrong document, so that
-            # paper goes through the pipeline again.
-            doi_now = existing_doi or normalize_doi(tracked.get("DOI", ""))
-            if doi_now == tracked.get("DOI", ""):
-                print(f"[{i + 1}/{total}] {title[:70]!r} — already downloaded, updating info columns")
-                enrich_record(tracked, i + 1, session, timeout, downloads_dir)
-                downloaded_count += 1
-                continue
+    try:
+        for i, row in df.iterrows():
+            # Periodic save so a crash or Ctrl+C at paper 763 of 5000
+            # doesn't lose the first 762 papers' work — the run resumes
+            # from the saved sheet.
+            if i and i % 25 == 0:
+                save_tracking(tracking_path, tracking)
 
-        print(f"[{i + 1}/{total}] {title[:70]!r}", end=" ... ")
+            title = str(row[title_col]).strip()
+            authors = str(row[authors_col]).strip() if authors_col else ""
+            existing_doi = normalize_doi(row[doi_col]) if doi_col else ""
 
-        doi = existing_doi
-        if not doi:
-            doi = normalize_doi(resolve_doi_via_crossref(title, authors, session, timeout))
+            tracked = tracking.get(title)
+            if tracked:
+                doi_now = existing_doi or normalize_doi(tracked.get("DOI", ""))
+                same_doi = doi_now == tracked.get("DOI", "")
+                status = tracked.get("Status", "")
+                # Skip papers already downloaded (by either stage) — but
+                # only if the DOI we'd use now matches the one that
+                # download was actually for. A DOI that normalization now
+                # corrects (e.g. a supplementary .s001 component stripped
+                # to the article's own DOI) means the saved file was the
+                # wrong document, so that paper goes through again.
+                if same_doi and status in ("downloaded", "downloaded_via_proxy"):
+                    print(f"[{i + 1}/{total}] {title[:70]!r} — already downloaded, updating info columns")
+                    enrich_record(tracked, i + 1, session, timeout, downloads_dir)
+                    downloaded_count += 1
+                    continue
+                # Fast resume for a batch run that stopped partway:
+                # rows already checked and waiting for Stage 2 don't
+                # need their lookups repeated.
+                if same_doi and status == "needs_proxy":
+                    print(f"[{i + 1}/{total}] {title[:70]!r} — already checked (needs proxy), skipping")
+                    needs_proxy_count += 1
+                    continue
+                # A title that had no DOI last time won't gain one by
+                # asking again — unless the Excel now provides it.
+                if status == "no_doi_found" and not existing_doi:
+                    print(f"[{i + 1}/{total}] {title[:70]!r} — still no DOI, skipping")
+                    continue
 
-        record = {field: "" for field in TRACKING_FIELDS}
-        record.update({
-            "Entry": str(i + 1),
-            "Title": title,
-            "Authors": authors,
-            "DOI": doi or "",
-            "Last_Updated": datetime.now(timezone.utc).isoformat(),
-        })
+            print(f"[{i + 1}/{total}] {title[:70]!r}", end=" ... ", flush=True)
 
-        if not doi:
-            record["Status"] = "no_doi_found"
-            record["Notes"] = "Could not resolve a DOI from title/authors"
-            print("no DOI found")
+            record = {field: "" for field in TRACKING_FIELDS}
+            record.update({
+                "Entry": str(i + 1),
+                "Title": title,
+                "Authors": authors,
+                "Last_Updated": datetime.now(timezone.utc).isoformat(),
+            })
+
+            # One paper must never kill a batch run: whatever goes wrong
+            # here is recorded on the row (status "error" retries on the
+            # next run) and the loop moves on.
+            try:
+                doi = existing_doi
+                if not doi:
+                    doi = normalize_doi(resolve_doi_via_crossref(title, authors, session, timeout))
+                record["DOI"] = doi or ""
+
+                if not doi:
+                    record["Status"] = "no_doi_found"
+                    record["Notes"] = "Could not resolve a DOI from title/authors"
+                    print("no DOI found")
+                    tracking[title] = record
+                    time.sleep(delay)
+                    continue
+
+                record["Source_URL"] = f"https://doi.org/{doi}"
+                record["Publisher_URL"] = resolve_publisher_url(doi, session, timeout)
+
+                # Year / author list / abstract summary from CrossRef —
+                # fetched up front so the file can be named properly.
+                meta = fetch_crossref_metadata(doi, session, timeout)
+                record["Year"] = meta.get("year", "")
+                if not record["Authors"] and meta.get("authors"):
+                    record["Authors"] = "; ".join(a["name"] for a in meta["authors"])
+                record["Key_Info"] = summarize_abstract(meta.get("abstract", ""))
+                record["Category"] = classify_topic(title, meta.get("abstract", ""))
+
+                unpaywall_data = query_unpaywall(doi, email, session, timeout)
+                pdf_url = best_oa_pdf_url(unpaywall_data)
+
+                if pdf_url:
+                    dest_path = os.path.join(
+                        downloads_dir,
+                        build_pdf_filename(record["Entry"], record["Category"], record["Year"], title, doi),
+                    )
+                    if download_pdf(pdf_url, dest_path, session, timeout):
+                        record["Status"] = "downloaded"
+                        record["PDF_Path"] = dest_path
+                        author_entries = meta.get("authors") or [
+                            a.strip() for a in re.split(r"[;,]", record["Authors"] or "") if a.strip()
+                        ]
+                        name, emails, institute = extract_pdf_contact_info(dest_path, author_entries)
+                        record["Corresponding_Author"] = name
+                        record["Corresponding_Email"] = emails
+                        record["Institute"] = institute
+                        downloaded_count += 1
+                        print("downloaded (open access)")
+                    else:
+                        record["Status"] = "needs_proxy"
+                        record["Notes"] = f"Open access URL found but download failed: {pdf_url}"
+                        needs_proxy_count += 1
+                        print("needs proxy (OA download failed)")
+                else:
+                    record["Status"] = "needs_proxy"
+                    record["Notes"] = "No open access copy found via Unpaywall"
+                    needs_proxy_count += 1
+                    print("needs proxy (no open access copy)")
+            except Exception as e:
+                record["Status"] = "error"
+                record["Notes"] = f"Stage 1 error (will retry on next run): {type(e).__name__}: {e}"
+                error_count += 1
+                print(f"error ({type(e).__name__}) — recorded, moving on")
+
             tracking[title] = record
             time.sleep(delay)
-            continue
+    finally:
+        save_tracking(tracking_path, tracking)
 
-        record["Source_URL"] = f"https://doi.org/{doi}"
-        record["Publisher_URL"] = resolve_publisher_url(doi, session, timeout)
-
-        # Year / author list / abstract summary from CrossRef — fetched
-        # up front so the downloaded file can be named properly.
-        meta = fetch_crossref_metadata(doi, session, timeout)
-        record["Year"] = meta.get("year", "")
-        if not record["Authors"] and meta.get("authors"):
-            record["Authors"] = "; ".join(a["name"] for a in meta["authors"])
-        record["Key_Info"] = summarize_abstract(meta.get("abstract", ""))
-        record["Category"] = classify_topic(title, meta.get("abstract", ""))
-
-        unpaywall_data = query_unpaywall(doi, email, session, timeout)
-        pdf_url = best_oa_pdf_url(unpaywall_data)
-
-        if pdf_url:
-            dest_path = os.path.join(
-                downloads_dir,
-                build_pdf_filename(record["Entry"], record["Category"], record["Year"], title, doi),
-            )
-            if download_pdf(pdf_url, dest_path, session, timeout):
-                record["Status"] = "downloaded"
-                record["PDF_Path"] = dest_path
-                author_entries = meta.get("authors") or [
-                    a.strip() for a in re.split(r"[;,]", record["Authors"] or "") if a.strip()
-                ]
-                name, emails, institute = extract_pdf_contact_info(dest_path, author_entries)
-                record["Corresponding_Author"] = name
-                record["Corresponding_Email"] = emails
-                record["Institute"] = institute
-                downloaded_count += 1
-                print("downloaded (open access)")
-            else:
-                record["Status"] = "needs_proxy"
-                record["Notes"] = f"Open access URL found but download failed: {pdf_url}"
-                needs_proxy_count += 1
-                print("needs proxy (OA download failed)")
-        else:
-            record["Status"] = "needs_proxy"
-            record["Notes"] = "No open access copy found via Unpaywall"
-            needs_proxy_count += 1
-            print("needs proxy (no open access copy)")
-
-        tracking[title] = record
-        time.sleep(delay)
-
-    save_tracking(tracking_path, tracking)
     print()
-    print(f"Done. {downloaded_count} downloaded directly, {needs_proxy_count} need the university proxy.")
+    print(f"Done. {downloaded_count} downloaded directly, {needs_proxy_count} need the university proxy"
+          + (f", {error_count} error(s) to retry on the next run" if error_count else "") + ".")
     print(f"See {tracking_path} for the full breakdown.")
 
 
