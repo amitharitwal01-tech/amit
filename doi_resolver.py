@@ -59,25 +59,83 @@ def find_column(columns, wanted_name):
     return None
 
 
-def load_excel(config):
-    excel_cfg = config.get("excel", {})
-    excel_path = config["paths"]["excel_input"]
-    if not os.path.exists(excel_path):
-        sys.exit(f"Excel file not found: {excel_path}")
-
-    sheet_name = excel_cfg.get("sheet_name", 0)
-    df = pd.read_excel(excel_path, sheet_name=sheet_name)
-
+def load_excel_file(path, excel_cfg):
+    # Normalizes one Excel file to fixed Title/Authors/DOI columns —
+    # each file's actual column names are matched independently, so
+    # files with different layouts can coexist in the input folder.
+    df = pd.read_excel(path, sheet_name=excel_cfg.get("sheet_name", 0))
     doi_col = find_column(df.columns, excel_cfg.get("doi_column", "DOI"))
     title_col = find_column(df.columns, excel_cfg.get("title_column", "Title"))
     authors_col = find_column(df.columns, excel_cfg.get("authors_column", "Authors"))
-
     if title_col is None:
+        return None
+    return pd.DataFrame({
+        "Title": df[title_col].astype(str),
+        "Authors": df[authors_col].astype(str) if authors_col else "",
+        "DOI": df[doi_col].astype(str) if doi_col else "",
+    })
+
+
+def load_input_rows(config):
+    # Every .xlsx dropped into the input folder is read and combined
+    # (sorted by filename, so publication_data_1/_2/_3 keeps a stable
+    # order and new files append at the end). Falls back to the single
+    # excel_input file when the folder isn't set up. Duplicate papers
+    # across files (same DOI, or same title when no DOI) count once.
+    excel_cfg = config.get("excel", {})
+    paths_cfg = config["paths"]
+
+    files = []
+    input_dir = paths_cfg.get("excel_input_dir", "")
+    if input_dir and os.path.isdir(input_dir):
+        for name in sorted(os.listdir(input_dir)):
+            # "~$..." are Excel's lock files for currently-open workbooks
+            if name.lower().endswith((".xlsx", ".xls")) and not name.startswith("~$"):
+                files.append(os.path.join(input_dir, name))
+
+    if not files:
+        single = paths_cfg.get("excel_input", "")
+        if single and os.path.exists(single):
+            files = [single]
+    if not files:
         sys.exit(
-            "Could not find a Title column in the Excel file. "
-            "Check 'excel.title_column' in the config."
+            "No Excel input found. Either put .xlsx files in the "
+            f"'{input_dir or 'publication_data'}' folder, or set "
+            "'paths.excel_input' in the config."
         )
-    return df, doi_col, title_col, authors_col
+
+    frames = []
+    for path in files:
+        try:
+            frame = load_excel_file(path, excel_cfg)
+        except Exception as e:
+            print(f"  (skipping {os.path.basename(path)}: {type(e).__name__}: {e})")
+            continue
+        if frame is None:
+            print(f"  (skipping {os.path.basename(path)}: no Title column found)")
+            continue
+        print(f"  {os.path.basename(path)}: {len(frame)} row(s)")
+        frames.append(frame)
+    if not frames:
+        sys.exit("None of the Excel files had a usable Title column.")
+
+    combined = pd.concat(frames, ignore_index=True)
+    seen = set()
+    keep = []
+    for _, row in combined.iterrows():
+        title = str(row["Title"]).strip()
+        if not title or title.lower() == "nan":
+            keep.append(False)
+            continue
+        doi = normalize_doi(row["DOI"])
+        key = ("doi", doi) if doi else ("title", title.lower())
+        keep.append(key not in seen)
+        seen.add(key)
+    deduped = combined[pd.Series(keep, index=combined.index)].reset_index(drop=True)
+    dropped = len(combined) - len(deduped)
+    if dropped:
+        print(f"  ({dropped} duplicate/empty row(s) across files ignored)")
+    return deduped
 
 
 def load_tracking(tracking_path):
@@ -449,7 +507,8 @@ def format_remaining(seconds):
 
 def main():
     config = load_config()
-    df, doi_col, title_col, authors_col = load_excel(config)
+    print("Reading paper list(s):")
+    df = load_input_rows(config)
 
     downloads_dir = config["paths"]["downloads_dir"]
     tracking_path = config["paths"]["tracking_csv"]
@@ -495,9 +554,11 @@ def main():
                 eta = f", {format_remaining(per_row * (total - i))} left"
             handled += 1
 
-            title = str(row[title_col]).strip()
-            authors = str(row[authors_col]).strip() if authors_col else ""
-            existing_doi = normalize_doi(row[doi_col]) if doi_col else ""
+            title = str(row["Title"]).strip()
+            authors = str(row["Authors"]).strip()
+            if authors.lower() == "nan":
+                authors = ""
+            existing_doi = normalize_doi(row["DOI"])
 
             tracked = tracking.get(title)
             if tracked:

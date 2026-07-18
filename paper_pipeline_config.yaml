@@ -5,6 +5,13 @@
 unpaywall_email: "amitharitwal14@gmail.com"
 
 paths:
+  # Drop any number of .xlsx files into this folder (e.g.
+  # publication_data_1.xlsx, publication_data_2.xlsx, ...) — every file
+  # is read and combined, with duplicates across files counted once.
+  # Files are processed in name order, so new files named later in the
+  # alphabet append cleanly without renumbering existing entries.
+  excel_input_dir: "publication_data"
+  # Fallback: used only when the folder above doesn't exist or is empty.
   excel_input: "Trial_1.xlsx"
   downloads_dir: "downloads"
   tracking_csv: "download_tracking.csv"
