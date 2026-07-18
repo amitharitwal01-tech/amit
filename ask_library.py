@@ -65,6 +65,48 @@ ANSWER_SYSTEM = (
 DEFAULT_GGUF_REPO = "bartowski/Qwen2.5-7B-Instruct-GGUF"
 DEFAULT_GGUF_FILE = "*Q4_K_M.gguf"
 
+GEMINI_KEY_PATH = "gemini_api_key.txt"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+
+
+def read_gemini_key(cfg):
+    key = (cfg.get("gemini_api_key") or "").strip()
+    if key:
+        return key
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        with open(GEMINI_KEY_PATH, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+class GeminiLLM:
+    # Google's free-tier API: fast, high-quality answers with no local
+    # compute — at the privacy cost that the retrieved passages are
+    # sent to Google. Only ever active when the user has created a key.
+    def __init__(self, api_key, model):
+        self.api_key = api_key
+        self.model = model
+        self.name = f"{model} via Google Gemini API"
+
+    def chat(self, system, prompt, timeout=120):
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
+            params={"key": self.api_key},
+            json={
+                "systemInstruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1500},
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        parts = resp.json()["candidates"][0]["content"]["parts"]
+        return "".join(p.get("text", "") for p in parts).strip()
+
 
 class OllamaLLM:
     def __init__(self, url, model):
@@ -126,7 +168,14 @@ class LlamaCppLLM:
 
 def make_llm(config):
     # Returns the first working AI backend, or None (verbatim mode).
+    # Order: Gemini (when a key is set up — fastest and best quality),
+    # then Ollama, then the pip-only llama-cpp backend.
     cfg = config.get("assistant", {}) or {}
+
+    gemini_key = read_gemini_key(cfg)
+    if gemini_key:
+        return GeminiLLM(gemini_key, cfg.get("gemini_model", DEFAULT_GEMINI_MODEL))
+
     url = cfg.get("ollama_url", DEFAULT_OLLAMA_URL)
     model = cfg.get("ollama_model", DEFAULT_OLLAMA_MODEL)
     try:

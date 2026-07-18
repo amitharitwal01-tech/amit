@@ -102,6 +102,14 @@ assistant:
   gguf_repo: "bartowski/Qwen2.5-7B-Instruct-GGUF"
   gguf_file: "*Q4_K_M.gguf"
 
+  # Google Gemini free-tier API (optional; preferred over the local
+  # backends when set up): create a key at https://aistudio.google.com
+  # and save it as the only line of gemini_api_key.txt next to the
+  # scripts (that file is gitignored, so the key never leaves your PC).
+  # Note: retrieved passages are sent to Google while this is active —
+  # delete the key file to go back to fully-local answering.
+  gemini_model: "gemini-2.5-flash"
+
 # How many papers each run handles before stopping cleanly — the next
 # run continues where the previous one left off. Stage 1 counts fresh
 # lookups (already-decided rows are skipped for free); Stage 2 counts
