@@ -133,6 +133,26 @@ def load_tracking(tracking_path):
 
 
 CREDENTIALS_PATH = "login_credentials.txt"
+HUMAN_CHECK_XLSX = "human_check_needed.xlsx"
+HUMAN_CHECK_MARKER = "skipped automatically"
+
+
+def save_human_check_list(tracking, path=HUMAN_CHECK_XLSX):
+    # The separate sheet of papers that hit a human-verification/login
+    # wall during an unattended run — one place to work through in an
+    # attended session later.
+    rows = [
+        {k: r.get(k, "") for k in TRACKING_FIELDS}
+        for r in tracking.values()
+        if HUMAN_CHECK_MARKER in (r.get("Notes") or "")
+    ]
+    if not rows:
+        return
+    try:
+        import pandas as pd
+        pd.DataFrame(rows).to_excel(path, index=False)
+    except Exception:
+        pass
 
 
 def read_credentials_file(path=CREDENTIALS_PATH):
@@ -994,50 +1014,32 @@ def try_download_paper(
     referer = None
     for url in target_urls:
         if goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout=25000, referer=referer):
-            return True
+            return True, None
         referer = page.url
 
-    # This is the only manual-intervention point in this function: a
-    # login/bot-check wall genuinely blocks everything below, so it's
-    # worth pausing once for it. Nothing past this point pauses or
-    # navigates elsewhere again — if the page we're already on doesn't
-    # have what we need, this paper is marked not-downloaded and the
-    # script moves on to the next one, rather than bouncing back through
-    # the journal site (which can re-trigger another login prompt).
+    # No mid-batch waiting for a human: a login/bot-check wall means
+    # this paper is skipped right here and logged for a later attended
+    # session (per explicit request — an unattended 1000-paper run must
+    # never sit blocked on a verification box). The layers below can't
+    # produce anything from a challenge page anyway.
     reason = describe_manual_step_needed(page)
     if reason:
-        print(f"needs {reason}")
-        input(
-            "Please handle it in the browser window, then press Enter "
-            "here to continue..."
-        )
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
-        except Exception:
-            pass
-        # The login/SSO callback usually redirects to a "safe" landing
-        # page rather than preserving the exact PDF URL originally
-        # requested — retry the real candidates now that login is
-        # established, not just whatever page the callback landed on.
-        for url in target_urls:
-            if goto_and_capture_direct_download(page, context, url, dest_path, nav_timeout=20000, referer=referer):
-                return True
-            referer = page.url
+        return False, reason
 
     # Layer 2: scholarly metadata embedded in <head>, if the page has it.
     if try_meta_pdf_with_fulltext_referer(page, context, dest_path):
-        return True
+        return True, None
 
     # Layer 2b: a link on the page whose href is itself a PDF-serving
     # endpoint (ScienceDirect's "View PDF"/pdfft link, generic .pdf).
     href_url = find_pdf_link_by_href(page)
     if href_url and fetch_or_navigate_to_pdf(page, context, href_url, dest_path):
-        return True
+        return True, None
 
     # Layer 3: an embedded PDF viewer (<embed>/<iframe>) rather than a link.
     embed_url = find_embedded_pdf_url(page)
     if embed_url and fetch_or_navigate_to_pdf(page, context, embed_url, dest_path):
-        return True
+        return True, None
 
     # Layer 4: a download control matching known specific markup patterns
     # confirmed from real pages (e.g. Wiley's icon + hidden tooltip span).
@@ -1050,7 +1052,7 @@ def try_download_paper(
         locator = find_download_locator_by_accessibility(page)
 
     if locator is not None and click_and_capture(page, context, lambda: locator.click(timeout=5000), dest_path):
-        return True
+        return True, None
 
     # Layer 6: the same icon located by its actual pixel appearance, for
     # icons with no accessible name or matching markup at all.
@@ -1058,9 +1060,9 @@ def try_download_paper(
     if icon_point is not None:
         x, y = icon_point
         if click_and_capture(page, context, lambda: page.mouse.click(x, y), dest_path):
-            return True
+            return True, None
 
-    return False
+    return False, None
 
 
 def save_debug_snapshot(page, doi, debug_dir="debug"):
@@ -1207,7 +1209,7 @@ def main():
             )
 
             try:
-                succeeded = try_download_paper(
+                succeeded, blocked_reason = try_download_paper(
                     page, context, row, target_urls, dest_path,
                     icon_template_path, icon_match_threshold,
                 )
@@ -1242,6 +1244,14 @@ def main():
                 mark_downloaded(row, dest_path)
                 downloaded_count += 1
                 print("downloaded")
+            elif blocked_reason:
+                mark_manual_check(
+                    row,
+                    f"Needs {blocked_reason} — {HUMAN_CHECK_MARKER} "
+                    f"(listed in {HUMAN_CHECK_XLSX}; retry these in an attended session)",
+                )
+                failed_count += 1
+                print(f"needs human verification — skipped (listed in {HUMAN_CHECK_XLSX})")
             elif looks_like_no_subscription_page(page):
                 save_debug_snapshot(page, row.get("DOI", ""))
                 mark_manual_check(
@@ -1270,6 +1280,7 @@ def main():
                     row["Institute"] = c_institute
 
             save_tracking(tracking_path, tracking)
+            save_human_check_list(tracking)
 
         if not browser_died:
             context.close()
