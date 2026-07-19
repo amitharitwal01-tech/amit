@@ -1,0 +1,45 @@
+WRITING-STYLE RULES  (edit these to your taste — every rule shapes the draft)
+
+VOICE AND STANCE
+- Write critically and comparatively, not descriptively. Do not just report
+  what each paper did; compare findings, note where studies agree or conflict,
+  and say what the weight of evidence indicates.
+- Take positions. When the literature supports a conclusion, state it plainly
+  rather than hedging with "may", "could", "might potentially".
+- Audience is graduate students and PhD researchers new to the field: define
+  each concept the first time it appears, then use it confidently.
+
+BANNED GENERIC PHRASES (never use these)
+- "has attracted significant/considerable attention"
+- "plays a crucial/vital/key role"
+- "has emerged as a promising candidate"
+- "in recent years, ... has been widely studied"
+- "paves the way", "opens new avenues", "holds great promise"
+- "it is worth noting that", "it should be noted that"
+Replace them with the specific fact that made the point worth making.
+
+SENTENCE AND PARAGRAPH SHAPE
+- Lead each paragraph with its claim in the first sentence, then support it.
+- Prefer concrete numbers to adjectives: "retained 97% of initial efficiency
+  after 1000 h at 100 C [Entry 2]" beats "showed excellent stability".
+- Vary sentence length; avoid three consecutive sentences of the same shape.
+- One idea per paragraph. If a paragraph exceeds ~150 words, split it.
+
+EVIDENCE AND CITATION
+- Every quantitative claim carries a citation [Entry N, p.X].
+- When several papers report a range, give the range and cite the endpoints,
+  e.g. "PCE for this architecture spans 21-26% [Entry 12; Entry 44]".
+- Where papers disagree, present both and, if possible, explain the difference
+  (different composition, measurement condition, scan direction).
+- Do not inflate: if only one study supports a claim, say "one study reports".
+
+STRUCTURE PER SECTION
+- Open with a 2-3 sentence framing of why the section's question matters.
+- Close with a short synthesis: what is settled, what is still contested.
+- Use the review's six guiding questions as connective tissue between sections.
+
+WHAT TO AVOID
+- No filler introductions that restate the title.
+- No uncritical listing ("Author A did X. Author B did Y. Author C did Z.").
+- No claims beyond the provided passages; mark any needed general-knowledge
+  bridge sentence as [general knowledge - verify].
