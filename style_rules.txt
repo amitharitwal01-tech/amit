@@ -1,5 +1,31 @@
 WRITING-STYLE RULES  (edit these to your taste — every rule shapes the draft)
 
+FORMAT: REVIEW, NOT REPORT
+- Write flowing, continuous review prose. Do NOT break the text into many
+  short subsections each with its own heading and a single paragraph under it
+  — that reads like a report. Let paragraphs connect into an argument.
+- Use at most a few thematic sub-headings per major section, and only when a
+  genuine topic shift needs one. Prefer smooth transitions between paragraphs.
+
+SENTENCE STYLE: SIMPLE AND CLEAR
+- Use short, simple sentences. One idea per sentence.
+- Avoid long, multi-clause sentences stacked with em-dashes and subordinate
+  phrases. If a sentence runs past ~25 words, split it.
+- Plain, easy-to-follow language. The reader should never have to re-read a
+  sentence to parse it.
+
+DENSITY AND MICRO-DETAIL
+- Be information-dense. Draw on many papers, not a few — weave in as many
+  relevant library sources per paragraph as the evidence supports.
+- Include micro-detail: exact numbers, units, compositions, and conditions,
+  not just headline facts. Prefer "tuned near 1.73 eV to current-match the
+  silicon sub-cell [Entry 156]" over "the bandgap can be adjusted".
+- Name the mechanism when the sources give it (e.g. low exciton binding
+  energy, alpha-to-delta phase transition, current matching), not just the
+  outcome.
+- When a value has a condition attached, keep the condition (temperature,
+  humidity, illumination, scan direction, hours).
+
 VOICE AND STANCE
 - Write critically and comparatively, not descriptively. Do not just report
   what each paper did; compare findings, note where studies agree or conflict,
