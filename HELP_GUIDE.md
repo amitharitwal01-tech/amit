@@ -20,11 +20,20 @@ very slow installs) — a plain virtual environment avoids that entirely.
 From inside your pipeline folder:
 
 ```
+conda deactivate
 python -m venv pipeline_env
 pipeline_env\Scripts\activate
 pip install -r paper_pipeline_requirements.txt PySide6 ruamel.yaml
 python -m playwright install chromium
 ```
+
+**If your terminal prompt starts with `(base)`** (Anaconda's default
+environment auto-activating), run `conda deactivate` first, as above —
+otherwise you'll end up with a prompt like `(pipeline_env) (base) ...`
+where *both* are active, Anaconda's own Qt/DLL files stay on `PATH`
+alongside the venv's, and you'll hit the exact same DLL error the venv
+was supposed to fix. One-time permanent fix so new terminals never
+auto-activate `base`: `conda config --set auto_activate_base false`.
 
 (On macOS/Linux, activate with `source pipeline_env/bin/activate`
 instead.) `paper_pipeline_requirements.txt` covers the download/index/AI
@@ -300,17 +309,24 @@ terminal — use the "From a terminal" command for whatever you were
 trying to do, and come back to the app later.
 
 **`ImportError: DLL load failed while importing QtCore`** (Windows,
-common with Anaconda's `base` environment) — a DLL conflict between
-Anaconda's other packages and PySide6, not a code bug. The reliable fix
-is the dedicated `pipeline_env` venv from section 0 above — a plain venv
-doesn't have Anaconda's conflicting DLLs on its `PATH` at all, so this
-error can't happen there. If you'd rather fix `base` directly instead of
-using a venv: `conda install -c conda-forge --override-channels
-pyside6` (can be slow — "Solving environment" over a large `base` env
-is normal, sometimes many minutes) — but this route can also hit its own
-issues (a corrupted download shows as `InvalidArchiveError`; retry after
-`conda clean --packages --tarballs -y`). The venv path is simpler and
-has proven more reliable in practice.
+common with Anaconda) — a DLL conflict between Anaconda's own files and
+PySide6's, not a code bug. Two ways this shows up:
+
+- Anaconda's `base` environment is the *only* one active (no venv yet):
+  fix is the dedicated `pipeline_env` venv from section 0 above. If
+  you'd rather fix `base` directly instead: `conda install -c
+  conda-forge --override-channels pyside6` (slow — "Solving
+  environment" over a large `base` env can take many minutes — and can
+  hit `InvalidArchiveError`, fixed by `conda clean --packages
+  --tarballs -y` then retrying).
+- **You already have `pipeline_env` and still see this error, with a
+  prompt like `(pipeline_env) (base) ...`** — `base` is still active
+  *underneath* the venv, so its DLLs are still on `PATH` and conflict
+  with the venv's own PySide6. Run `conda deactivate` (this only drops
+  `base`; the venv stays active) and try again. Make it permanent with
+  `conda config --set auto_activate_base false` so new terminals never
+  auto-activate `base` in the first place. The `.bat` launchers do this
+  automatically for you.
 
 **A script says a module isn't installed.** Re-run:
 ```
