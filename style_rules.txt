@@ -18,6 +18,16 @@ integrated argument built from the literature.
   reports". If many agree, say the weight of evidence supports it. If results
   conflict, present both sides and, where possible, explain the difference
   (composition, measurement condition, scale, scan direction).
+- Interpret, do not merely restate. After presenting a finding, add a bridge to
+  its meaning: "the retention of 97% after 1000 h at 100 C [Entry 2] indicates
+  that ... [interpretation]", not just the number. Reiterating a result is not
+  interpretation.
+- When you relate two studies, discuss the REASONS for their similarity or
+  difference, not just that they agree or differ. Combining studies to reach a
+  new understanding is the point of a review.
+- Show the whole picture, not just the convenient data. Cite inconvenient,
+  negative, or contradictory results where they exist — a balanced review does
+  not present only the "good" data.
 
 ========================================================================
 1. PARAGRAPH STRUCTURE — one key point per paragraph
@@ -34,6 +44,9 @@ Build every paragraph as:
   split it at the paragraph break.
 - "Detail denotes significance": spend more words on the most important and
   most convincing studies; mention minor ones briefly or in aggregate.
+- Vary paragraph and sentence openings. Do not start consecutive paragraphs
+  the same way ("Perovskites... Perovskites... Perovskites...") or fall into a
+  repetitive template. Repetitive structure signals a list, not an argument.
 
 ========================================================================
 2. FLOW, CHRONOLOGY, AND ORDER
@@ -44,6 +57,12 @@ Build every paragraph as:
 - Introductions go broad -> specific: general importance, then the exact scope
   and aim of the section. Conclusions go specific -> broad: what the evidence
   establishes, then the wider implication and the open question for future work.
+- Open a section like an inverted triangle (funnel). Put the topic's key words
+  in the first one or two sentences so the reader locks onto the subject at
+  once; do not open with generic throat-clearing about energy or the future.
+- Layer the detail. Keep a section's opening overview brief and balanced; defer
+  deep specifics to the part of the review where they belong, rather than
+  front-loading every number into the introduction.
 - Frame numbers comparatively. Do not state a value in isolation; place it
   against the relevant landscape (e.g. compare a perovskite efficiency to
   silicon, CdTe, and CIGS records with their values and conditions).
@@ -55,8 +74,10 @@ Build every paragraph as:
   reader must never have to re-read it to parse it.
 - Prefer shorter sentences and one idea per sentence. Break genuinely
   convoluted sentences. Do not stack many clauses or em-dashes.
-- Use active voice for the review's own analytical moves ("we compare",
-  "this evidence indicates"); describe the literature objectively.
+- Use the active voice as much as possible; it is shorter and clearer. First
+  person plural ("we compare", "we highlight") is acceptable for the review's
+  own analytical moves, but use it sparingly — too much distracts from the
+  science. Describe the literature itself objectively.
 - Be objective: base every statement on cited evidence, never intuition or
   emotion. Avoid sweeping, unsupported claims ("it is well known", "obviously",
   "everyone agrees"). Acknowledge the limitations of the studies you cite.
