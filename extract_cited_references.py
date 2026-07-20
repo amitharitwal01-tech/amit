@@ -32,11 +32,14 @@ DEFAULT_OUT_DIR = "cited_references"
 
 def extract_text_from_docx(path):
     # Doesn't require python-docx: a .docx is a zip archive, and
-    # word/document.xml holds the text between XML tags. Stripping
-    # tags is enough here since only citation labels need to survive
-    # intact, not formatting.
+    # word/document.xml holds the text between XML tags. Paragraph ends
+    # are turned into newlines before the remaining tags are stripped,
+    # so each line of a generated placeholder box (one Paragraph each)
+    # survives as its own line — needed by extract_cited_figures.py to
+    # associate a citation with the panel/row it appeared in.
     with zipfile.ZipFile(path) as z:
         xml = z.read("word/document.xml").decode("utf-8", errors="replace")
+    xml = xml.replace("</w:p>", "</w:p>\n")
     return re.sub(r"<[^>]+>", " ", xml)
 
 
