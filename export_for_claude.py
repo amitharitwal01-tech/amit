@@ -34,13 +34,28 @@ from ask_library import split_into_subquestions
 import build_index
 
 SECTION_HEADING = re.compile(r"^(?:\d+[.)]\s+|#+\s+)(.+)$")
+HORIZONTAL_RULE = re.compile(r"^[-–—_=]{5,}$")
 
 
 def parse_outline(text):
+    lines = text.splitlines()
+
+    # Many outlines carry front-matter before the real sections: a title,
+    # audience/length notes, and a "review philosophy" list of guiding
+    # questions — often numbered, which the heading pattern would wrongly
+    # read as sections. When the outline separates sections with a
+    # horizontal rule (----), treat everything before the FIRST rule as
+    # front-matter and skip it, so only the real sections remain.
+    rule_positions = [i for i, ln in enumerate(lines) if HORIZONTAL_RULE.match(ln.strip())]
+    if rule_positions:
+        lines = lines[rule_positions[0] + 1:]
+
     sections = []
     current = None
-    for line in text.splitlines():
+    for line in lines:
         stripped = line.strip()
+        if HORIZONTAL_RULE.match(stripped):
+            continue  # separators are not content
         heading = SECTION_HEADING.match(stripped)
         if heading:
             current = {"heading": heading.group(1).strip(), "spec": []}
