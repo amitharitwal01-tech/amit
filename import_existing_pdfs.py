@@ -21,7 +21,13 @@ from config, so there's no stale path to forget about.
 
 Usage:
     python import_existing_pdfs.py
+    python import_existing_pdfs.py --folder "C:\path\to\pdfs" --yes
+
+--folder/--yes are for driving this script non-interactively (e.g. from
+the desktop app's own folder picker) — running it plain still asks for
+the folder and a confirmation, exactly as before.
 """
+import argparse
 import os
 import re
 import sys
@@ -156,6 +162,11 @@ def import_one_pdf(pdf_path, session, email, timeout, known_dois):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Import manually-downloaded PDFs into the library.")
+    parser.add_argument("--folder", help="source folder (skips the interactive prompt)")
+    parser.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    args = parser.parse_args()
+
     config = load_config()
     tracking_path = config["paths"]["tracking_csv"]
     downloads_dir = config["paths"]["downloads_dir"]
@@ -165,7 +176,7 @@ def main():
     timeout = net_cfg.get("timeout_seconds", 30)
     delay = net_cfg.get("request_delay_seconds", 0.5)
 
-    source_dir = input("Folder to import PDFs from: ").strip().strip('"')
+    source_dir = args.folder or input("Folder to import PDFs from: ").strip().strip('"')
     if not source_dir or not os.path.isdir(source_dir):
         sys.exit(f"Not a folder: {source_dir!r}")
 
@@ -180,7 +191,7 @@ def main():
     print(f"\n{len(candidates)} PDF(s) found in {source_dir}:")
     for path in candidates:
         print(f"  {os.path.basename(path)}")
-    if input(f"\nImport these {len(candidates)} file(s)? [Y/n] ").strip().lower() == "n":
+    if not args.yes and input(f"\nImport these {len(candidates)} file(s)? [Y/n] ").strip().lower() == "n":
         print("Cancelled.")
         return
 
