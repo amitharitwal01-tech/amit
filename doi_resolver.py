@@ -322,10 +322,13 @@ def fetch_crossref_metadata(doi, session, timeout):
             "affiliation": affiliations[0] if affiliations else "",
         })
 
+    titles = message.get("title") or []
+
     return {
         "year": year,
         "authors": authors,
         "abstract": strip_jats_markup(message.get("abstract", "")),
+        "title": titles[0].strip() if titles else "",
     }
 
 
