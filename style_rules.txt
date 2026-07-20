@@ -1,71 +1,121 @@
-WRITING-STYLE RULES  (edit these to your taste — every rule shapes the draft)
+WRITING-STYLE RULES FOR A SCIENTIFIC LITERATURE REVIEW
+(distilled from scientific-writing guides, a literature-review workshop, a
+high-impact exemplar review, and journal peer-review criteria. Edit freely —
+every rule shapes the draft.)
 
-FORMAT: REVIEW, NOT REPORT
-- Write flowing, continuous review prose. Do NOT break the text into many
-  short subsections each with its own heading and a single paragraph under it
-  — that reads like a report. Let paragraphs connect into an argument.
-- Use at most a few thematic sub-headings per major section, and only when a
-  genuine topic shift needs one. Prefer smooth transitions between paragraphs.
+========================================================================
+0. THE ONE RULE THAT MATTERS MOST: ANALYSE, DO NOT DESCRIBE
+========================================================================
+A review is NOT a summary of papers one after another. It is a critical,
+integrated argument built from the literature.
+- Never write "Author A did X. Author B did Y. Author C did Z." Group findings
+  by concept, then say what they collectively mean.
+- For every body of evidence, do more than report it: compare it, weigh it,
+  and say what it establishes, what it leaves open, and where studies disagree.
+- Actively surface conflicting results, controversies, hidden assumptions, and
+  under-examined areas. A reviewer marks a manuscript up for exactly this.
+- Distinguish fact from claim. If one study supports a point, say "one study
+  reports". If many agree, say the weight of evidence supports it. If results
+  conflict, present both sides and, where possible, explain the difference
+  (composition, measurement condition, scale, scan direction).
 
-SENTENCE STYLE: SIMPLE AND CLEAR
-- Use short, simple sentences. One idea per sentence.
-- Avoid long, multi-clause sentences stacked with em-dashes and subordinate
-  phrases. If a sentence runs past ~25 words, split it.
-- Plain, easy-to-follow language. The reader should never have to re-read a
-  sentence to parse it.
+========================================================================
+1. PARAGRAPH STRUCTURE — one key point per paragraph
+========================================================================
+Build every paragraph as:
+  (a) TOPIC SENTENCE: a strong "umbrella" sentence stating the paragraph's one
+      key point.
+  (b) SUPPORTING SENTENCES: context, data, and examples — each factual claim
+      carrying a citation. Include opposing or conflicting data here, not only
+      the convenient results.
+  (c) CONCLUDING / LINKING SENTENCE: say why the point matters, or bridge to
+      the next paragraph so the argument flows.
+- One key point per paragraph. If a paragraph carries two distinct points,
+  split it at the paragraph break.
+- "Detail denotes significance": spend more words on the most important and
+  most convincing studies; mention minor ones briefly or in aggregate.
 
-DENSITY AND MICRO-DETAIL
-- Be information-dense. Draw on many papers, not a few — weave in as many
-  relevant library sources per paragraph as the evidence supports.
+========================================================================
+2. FLOW, CHRONOLOGY, AND ORDER
+========================================================================
+- Group research by theme/concept, not by paper and not by date.
+- Do NOT write a chronological history of events. Use chronology only in
+  service of an argument (e.g. to show a field maturing or a problem shifting).
+- Introductions go broad -> specific: general importance, then the exact scope
+  and aim of the section. Conclusions go specific -> broad: what the evidence
+  establishes, then the wider implication and the open question for future work.
+- Frame numbers comparatively. Do not state a value in isolation; place it
+  against the relevant landscape (e.g. compare a perovskite efficiency to
+  silicon, CdTe, and CIGS records with their values and conditions).
+
+========================================================================
+3. SENTENCES — clear first, simple where possible
+========================================================================
+- Clarity is the goal. A sentence may carry real technical content, but the
+  reader must never have to re-read it to parse it.
+- Prefer shorter sentences and one idea per sentence. Break genuinely
+  convoluted sentences. Do not stack many clauses or em-dashes.
+- Use active voice for the review's own analytical moves ("we compare",
+  "this evidence indicates"); describe the literature objectively.
+- Be objective: base every statement on cited evidence, never intuition or
+  emotion. Avoid sweeping, unsupported claims ("it is well known", "obviously",
+  "everyone agrees"). Acknowledge the limitations of the studies you cite.
+
+========================================================================
+4. DENSITY AND MICRO-DETAIL
+========================================================================
+- Be information-dense. Draw on many sources per paragraph, not a few.
 - Include micro-detail: exact numbers, units, compositions, and conditions,
   not just headline facts. Prefer "tuned near 1.73 eV to current-match the
   silicon sub-cell [Entry 156]" over "the bandgap can be adjusted".
-- Name the mechanism when the sources give it (e.g. low exciton binding
-  energy, alpha-to-delta phase transition, current matching), not just the
-  outcome.
-- When a value has a condition attached, keep the condition (temperature,
-  humidity, illumination, scan direction, hours).
+- Name the mechanism when the sources give it (low exciton binding energy,
+  alpha-to-delta phase transition, current matching, non-radiative
+  recombination), not just the outcome.
+- Keep the condition attached to every conditional value (temperature,
+  humidity, illumination, scan direction, hours, area).
+- Favour recent data where the science has moved, but cite the foundational
+  work when a claim rests on it.
 
-VOICE AND STANCE
-- Write critically and comparatively, not descriptively. Do not just report
-  what each paper did; compare findings, note where studies agree or conflict,
-  and say what the weight of evidence indicates.
-- Take positions. When the literature supports a conclusion, state it plainly
-  rather than hedging with "may", "could", "might potentially".
-- Audience is graduate students and PhD researchers new to the field: define
-  each concept the first time it appears, then use it confidently.
+========================================================================
+5. FORMATTING AND MECHANICS
+========================================================================
+- Define every abbreviation at first use, then use it consistently
+  (e.g. "power conversion efficiency (PCE)").
+- No contractions ("do not", not "don't").
+- Use precise, consistent terminology; "correlated" is not "related".
+- No similes, metaphors, or humour.
+- Quantify wherever relevant; attach units to every number.
+- Figures/tables: aim for one key figure or table per section; always refer to
+  it in the text ("as shown in Figure 1"); write a legend that stands alone.
+  Reused published figures need publisher permission — flag each.
 
-BANNED GENERIC PHRASES (never use these)
+========================================================================
+6. BANNED GENERIC PHRASES (never use)
+========================================================================
 - "has attracted significant/considerable attention"
 - "plays a crucial/vital/key role"
 - "has emerged as a promising candidate"
 - "in recent years, ... has been widely studied"
 - "paves the way", "opens new avenues", "holds great promise"
 - "it is worth noting that", "it should be noted that"
-Replace them with the specific fact that made the point worth making.
+Replace each with the specific fact that made the point worth making.
 
-SENTENCE AND PARAGRAPH SHAPE
-- Lead each paragraph with its claim in the first sentence, then support it.
-- Prefer concrete numbers to adjectives: "retained 97% of initial efficiency
-  after 1000 h at 100 C [Entry 2]" beats "showed excellent stability".
-- Vary sentence length; avoid three consecutive sentences of the same shape.
-- One idea per paragraph. If a paragraph exceeds ~150 words, split it.
+========================================================================
+7. THE REVIEWER'S LENS (write so a peer reviewer is satisfied)
+========================================================================
+Before finishing a section, check it would pass a reviewer on:
+- Coverage: is the literature represented fairly and broadly, not cherry-picked?
+- Support: is every claim backed by a cited source?
+- Balance: are conflicting results and limitations acknowledged?
+- Insight: does the section SYNTHESISE (offer a view of the field) rather than
+  just summarise individual papers?
+- Structure: does the argument follow a logical order and flow?
+- Honesty: where the library does not support a needed point, say so and mark
+  any bridging sentence as [general knowledge - verify], rather than inventing.
 
-EVIDENCE AND CITATION
-- Every quantitative claim carries a citation [Entry N, p.X].
-- When several papers report a range, give the range and cite the endpoints,
-  e.g. "PCE for this architecture spans 21-26% [Entry 12; Entry 44]".
-- Where papers disagree, present both and, if possible, explain the difference
-  (different composition, measurement condition, scan direction).
-- Do not inflate: if only one study supports a claim, say "one study reports".
-
-STRUCTURE PER SECTION
-- Open with a 2-3 sentence framing of why the section's question matters.
-- Close with a short synthesis: what is settled, what is still contested.
-- Use the review's six guiding questions as connective tissue between sections.
-
-WHAT TO AVOID
-- No filler introductions that restate the title.
-- No uncritical listing ("Author A did X. Author B did Y. Author C did Z.").
-- No claims beyond the provided passages; mark any needed general-knowledge
-  bridge sentence as [general knowledge - verify].
+========================================================================
+8. AUDIENCE
+========================================================================
+Graduate students, PhD researchers, and newcomers to the field. Define each
+concept the first time it appears, then use it confidently. Assume the reader
+knows general science but not the specifics of this topic.
