@@ -90,6 +90,8 @@ Everything in the workspace falls into one of four groups.
 | `extract_cited_figures.py` | After finalizing: pull cited figure/table sources |
 | `export_citation_library.py` | After finalizing: .ris export for EndNote/Zotero |
 | `manuscript_engine.py` | The desktop app that drives all of the above |
+| `Launch_Manuscript_Engine.bat` | Windows one-click launcher (no terminal, no typing) — see `HELP_GUIDE.md` §0 |
+| `Launch_Manuscript_Engine_Debug.bat` | Same, but keeps the console open — use if the normal launcher seems to do nothing |
 
 **2. Your data and settings (keep — irreplaceable or hand-written)**
 

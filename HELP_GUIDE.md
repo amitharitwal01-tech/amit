@@ -14,18 +14,43 @@ also viewable inside the app itself (sidebar → **Help**).
 
 ## 0. One-time setup
 
-**What you need installed once:**
+**Recommended: a dedicated environment for this folder.** Anaconda's
+`base` environment often conflicts with PySide6's Qt files (DLL errors,
+very slow installs) — a plain virtual environment avoids that entirely.
+From inside your pipeline folder:
 
 ```
-pip install -r paper_pipeline_requirements.txt
-pip install PySide6 ruamel.yaml
+python -m venv pipeline_env
+pipeline_env\Scripts\activate
+pip install -r paper_pipeline_requirements.txt PySide6 ruamel.yaml
 python -m playwright install chromium
 ```
 
-`paper_pipeline_requirements.txt` covers the download/index/AI scripts
-(`requests`, `pandas`, `openpyxl`, `PyMuPDF`, `pypdf`, `fastembed`,
-`playwright`, ...). `PySide6` and `ruamel.yaml` are only needed if
-you're using the desktop app.
+(On macOS/Linux, activate with `source pipeline_env/bin/activate`
+instead.) `paper_pipeline_requirements.txt` covers the download/index/AI
+scripts (`requests`, `pandas`, `openpyxl`, `PyMuPDF`, `pypdf`,
+`fastembed`, `playwright`, ...); `PySide6`/`ruamel.yaml` are only needed
+for the desktop app.
+
+Once this venv exists, you never need to type `activate` again to run
+the app day to day — see **one-click launch** just below.
+
+### One-click launch (Windows)
+
+Double-click **`Launch_Manuscript_Engine.bat`** in your pipeline folder
+— it opens the app directly, no terminal, no typing. For an actual
+desktop icon: right-click that file → **Send to → Desktop (create
+shortcut)**, then (optional) right-click the new shortcut → Properties
+→ Change Icon, to give it its own look.
+
+If double-clicking seems to do nothing, run
+**`Launch_Manuscript_Engine_Debug.bat`** instead — it's identical but
+keeps a console window open so you can see exactly what went wrong.
+
+Both `.bat` files assume the venv is named `pipeline_env` and sits in
+the same folder as `manuscript_engine.py`, exactly as set up above —
+they run that venv's own Python directly, which uses its packages
+without needing `activate` at all.
 
 **Files you fill in once by hand** (all local-only, never uploaded or
 committed — see `.gitignore`):
@@ -275,17 +300,17 @@ terminal — use the "From a terminal" command for whatever you were
 trying to do, and come back to the app later.
 
 **`ImportError: DLL load failed while importing QtCore`** (Windows,
-common with Anaconda). This is a DLL conflict between Anaconda's base
-environment and the pip-installed PySide6 wheel, not a code bug. Fix:
-```
-pip uninstall -y PySide6 PySide6-Addons PySide6-Essentials shiboken6
-conda install -c conda-forge --override-channels pyside6
-```
-(`--override-channels` avoids conda mixing the `defaults` and
-`conda-forge` channels, which is what makes "Solving environment" hang
-for a very long time in a big Anaconda `base` env — normal, but can
-take many minutes.) If conda is still too slow, `pip install
---force-reinstall --no-cache-dir PySide6` is a faster alternative.
+common with Anaconda's `base` environment) — a DLL conflict between
+Anaconda's other packages and PySide6, not a code bug. The reliable fix
+is the dedicated `pipeline_env` venv from section 0 above — a plain venv
+doesn't have Anaconda's conflicting DLLs on its `PATH` at all, so this
+error can't happen there. If you'd rather fix `base` directly instead of
+using a venv: `conda install -c conda-forge --override-channels
+pyside6` (can be slow — "Solving environment" over a large `base` env
+is normal, sometimes many minutes) — but this route can also hit its own
+issues (a corrupted download shows as `InvalidArchiveError`; retry after
+`conda clean --packages --tarballs -y`). The venv path is simpler and
+has proven more reliable in practice.
 
 **A script says a module isn't installed.** Re-run:
 ```
