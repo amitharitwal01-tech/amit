@@ -34,7 +34,7 @@ from datetime import datetime
 
 import requests
 
-from doi_resolver import load_config
+from doi_resolver import load_config, resolve_output_path
 import build_index
 
 ANSWERS_DIR = "answers"
@@ -291,7 +291,7 @@ def build_references(db, entries):
     return refs
 
 
-def export_question_pack(question, db, embedder, top_k):
+def export_question_pack(question, db, embedder, top_k, out=None):
     # The slow part of local answering is the AI generation, not the
     # retrieval — so do only the fast part here and hand the writing to
     # Claude: everything it needs (question, sub-questions, evidence
@@ -336,8 +336,7 @@ def export_question_pack(question, db, embedder, top_k):
     if refs:
         lines += ["## References catalog", ""] + [f"- {r}" for r in refs]
 
-    os.makedirs(ANSWERS_DIR, exist_ok=True)
-    out_path = os.path.join(ANSWERS_DIR, f"question_pack_{datetime.now():%Y%m%d_%H%M%S}.md")
+    out_path = resolve_output_path(out, ANSWERS_DIR, f"question_pack_{datetime.now():%Y%m%d_%H%M%S}.md")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print()
@@ -357,6 +356,8 @@ def main():
              "passages as a small file to upload to Claude, which writes "
              "the answer there (fast on any machine)",
     )
+    parser.add_argument("--out", help="where to save the result: a file, or a folder "
+                        "to keep the default timestamped name inside it (default: answers/)")
     args = parser.parse_args()
 
     if args.file:
@@ -374,7 +375,7 @@ def main():
     embedder = build_index.get_embedder()
 
     if args.pack:
-        export_question_pack(question, db, embedder, args.top)
+        export_question_pack(question, db, embedder, args.top, args.out)
         return
 
     llm = None
@@ -446,8 +447,7 @@ def main():
         lines += ["## References (from your library)", ""] + [f"- {r}" for r in refs]
 
     output = "\n".join(lines)
-    os.makedirs(ANSWERS_DIR, exist_ok=True)
-    out_path = os.path.join(ANSWERS_DIR, f"answer_{datetime.now():%Y%m%d_%H%M%S}.md")
+    out_path = resolve_output_path(args.out, ANSWERS_DIR, f"answer_{datetime.now():%Y%m%d_%H%M%S}.md")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(output)
 

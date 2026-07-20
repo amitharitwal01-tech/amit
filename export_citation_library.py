@@ -106,12 +106,20 @@ def main():
         description="Export every paper cited [Entry N] in a manuscript as a .ris file for EndNote/Zotero."
     )
     parser.add_argument("manuscript", help="path to the manuscript (.docx, .md, or .txt)")
-    parser.add_argument("--out", default=DEFAULT_OUT_PREFIX,
-                         help=f"output filename prefix (default: {DEFAULT_OUT_PREFIX})")
+    parser.add_argument("--out",
+                         help="output filename prefix, optionally with a folder "
+                              f"(default: finalized/<manuscript name>/{DEFAULT_OUT_PREFIX})")
     args = parser.parse_args()
 
     if not os.path.exists(args.manuscript):
         sys.exit(f"Manuscript not found: {args.manuscript}")
+    if not args.out:
+        # Same per-manuscript folder the other finalize tools use.
+        stem = os.path.splitext(os.path.basename(args.manuscript))[0]
+        args.out = os.path.join("finalized", stem, DEFAULT_OUT_PREFIX)
+    out_parent = os.path.dirname(args.out)
+    if out_parent:
+        os.makedirs(out_parent, exist_ok=True)
 
     config = load_config()
     tracking = load_tracking(config["paths"]["tracking_csv"])

@@ -14,13 +14,16 @@ this list:
     build_index.py          --rebuild | --search Q... | --find-figure Q...
                              | --match-figure IMG  [--top N]
     ask_library.py          [question...] [--file F] [--top N] [--no-ai]
-                             [--pack]
+                             [--pack] [--out FILE|DIR]   (default answers/)
     export_catalog.py       [--full] [--category C] [--since Y] [--until Y]
-                             [--years SPEC] [--status S] [--out FILE]
+                             [--years SPEC] [--status S] [--out FILE|DIR]
+                             (default catalogs/)
     export_for_claude.py    OUTLINE [--per-section N] [--style FILE]
+                             [--out FILE|DIR]   (default research_packs/)
     extract_cited_references.py   MANUSCRIPT [--out DIR]
     extract_cited_figures.py      MANUSCRIPT [--out DIR]
     export_citation_library.py    MANUSCRIPT [--out PREFIX]
+                             (all three default to finalized/<manuscript name>/)
 
 Every one of these is launched with its working directory set to the
 scripts folder — required, since each script resolves its config file
@@ -347,6 +350,37 @@ class PathPicker(QWidget):
 
     def set_value(self, value: str) -> None:
         self.edit.setText(value or "")
+
+
+class OutputChooser(QWidget):
+    """Optional 'where to save' row: a folder picker plus a filename
+    field. Anything left blank falls back to the script's own organized
+    default, so this never has to be filled in."""
+
+    def __init__(self, name_placeholder: str):
+        super().__init__()
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.folder = PathPicker("", is_dir=True, placeholder="Folder (blank = default)")
+        self.name = QLineEdit()
+        self.name.setPlaceholderText(name_placeholder)
+        self.name.setClearButtonEnabled(True)
+        layout.addWidget(self.folder, 3)
+        layout.addWidget(self.name, 2)
+
+    def out_arg(self) -> list[str]:
+        folder = self.folder.value()
+        name = self.name.text().strip()
+        if folder and name:
+            return ["--out", str(Path(folder) / name)]
+        if folder:
+            # Folder only: the trailing separator tells the script to
+            # keep its default filename inside this folder.
+            return ["--out", folder.rstrip("/\\") + os.sep]
+        if name:
+            return ["--out", name]
+        return []
 
 
 class LogConsole(QPlainTextEdit):
@@ -999,6 +1033,16 @@ class MainWindow(QMainWindow):
         ws_card.layout().addWidget(self.workspace_status)
         layout.addWidget(ws_card)
 
+        tidy_card = Card("Tidy the workspace", "Moves generated files left in the workspace root by older runs "
+                         "(catalog_*, research_pack_*, answer files) into their organized folders — "
+                         "catalogs/, research_packs/, answers/. Nothing is deleted.")
+        self.tidy_panel = ProcessPanel("Tidy Workspace", self.log_console, self.set_status)
+        self.tidy_panel.run_btn.setText("Tidy now")
+        self.tidy_panel.run_btn.clicked.connect(
+            lambda: self.run_in_panel(self.tidy_panel, "tidy_workspace.py", ["--yes"]))
+        tidy_card.layout().addWidget(self.tidy_panel)
+        layout.addWidget(tidy_card)
+
         recent_card = Card("Recent files", "Files you've opened in the viewer.")
         recent_card.layout().addWidget(self.home_recent)
         layout.addWidget(recent_card)
@@ -1131,6 +1175,10 @@ class MainWindow(QMainWindow):
         opt_row.addWidget(self.noai_check)
         opt_row.addStretch()
         ask.layout().addLayout(opt_row)
+        ask_out_form = QFormLayout()
+        self.ask_out = OutputChooser("File name, e.g. tin_stability.md (blank = automatic)")
+        ask_out_form.addRow("Save result to:", self.ask_out)
+        ask.layout().addLayout(ask_out_form)
         self.ask_panel = ProcessPanel("Ask Library", self.log_console, self.set_status)
         self.ask_panel.run_btn.setText("Ask")
         self.ask_panel.run_btn.clicked.connect(self.run_ask)
@@ -1164,6 +1212,7 @@ class MainWindow(QMainWindow):
             args.append("--pack")
         if self.noai_check.isChecked():
             args.append("--no-ai")
+        args += self.ask_out.out_arg()
         args.append(q)
         self.run_in_panel(self.ask_panel, "ask_library.py", args)
 
@@ -1190,6 +1239,8 @@ class MainWindow(QMainWindow):
         form.addRow("Years:", self._wrap(yr_row))
         self.cat_full = QCheckBox("Include abstracts + figure/table captions (--full)")
         form.addRow("", self.cat_full)
+        self.cat_out = OutputChooser("File name, e.g. catalog_solarcell.md (blank = automatic)")
+        form.addRow("Save to:", self.cat_out)
         catalog.layout().addLayout(form)
         self.catalog_panel = ProcessPanel("Export Catalog", self.log_console, self.set_status)
         self.catalog_panel.run_btn.setText("Export catalog")
@@ -1207,6 +1258,8 @@ class MainWindow(QMainWindow):
         oform.addRow("Passages per section:", self.per_section)
         self.style_picker = PathPicker(is_dir=False, filter_str="Text files (*.txt)")
         oform.addRow("Style rules file:", self.style_picker)
+        self.pack_out = OutputChooser("File name, e.g. pack_section5.md (blank = automatic)")
+        oform.addRow("Save to:", self.pack_out)
         draft.layout().addLayout(oform)
         self.draft_panel = ProcessPanel("Research Pack", self.log_console, self.set_status)
         self.draft_panel.run_btn.setText("Build research pack")
@@ -1235,6 +1288,7 @@ class MainWindow(QMainWindow):
             args += ["--since", str(self.cat_since.value())]
         if self.cat_until.value():
             args += ["--until", str(self.cat_until.value())]
+        args += self.cat_out.out_arg()
         self.run_in_panel(self.catalog_panel, "export_catalog.py", args)
 
     def run_export_for_claude(self):
@@ -1247,6 +1301,7 @@ class MainWindow(QMainWindow):
             args += ["--per-section", str(self.per_section.value())]
         if self.style_picker.value():
             args += ["--style", self.style_picker.value()]
+        args += self.pack_out.out_arg()
         self.run_in_panel(self.draft_panel, "export_for_claude.py", args)
 
     # ---------------- Finalize Manuscript ----------------
@@ -1259,6 +1314,16 @@ class MainWindow(QMainWindow):
                      "papers, figure/table sources, and a citation-manager-ready library.")
         self.manuscript_picker = PathPicker(is_dir=False, filter_str="Documents (*.docx *.md *.txt)")
         intro.layout().addWidget(self.manuscript_picker)
+        fin_form = QFormLayout()
+        self.finalize_out = PathPicker("", is_dir=True,
+                                       placeholder="Blank = finalized/<manuscript name>/ next to the scripts")
+        fin_form.addRow("Output folder:", self.finalize_out)
+        intro.layout().addLayout(fin_form)
+        fin_hint = QLabel("Each tool below writes into its own subfolder there (cited_references, "
+                          "cited_figures_tables, citation library), so nothing gets mixed together.")
+        fin_hint.setObjectName("Hint")
+        fin_hint.setWordWrap(True)
+        intro.layout().addWidget(fin_hint)
         layout.addWidget(intro)
 
         refs = Card("1 — Cited papers", "Runs extract_cited_references.py — copies every cited [Entry N] PDF into its own folder.")
@@ -1287,12 +1352,24 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return page
 
+    # Subfolder (or, for the .ris export, filename prefix) each finalize
+    # tool gets inside the chosen output folder, so their outputs never mix.
+    FINALIZE_SUBDIRS = {
+        "extract_cited_references.py": "cited_references",
+        "extract_cited_figures.py": "cited_figures_tables",
+        "export_citation_library.py": "cited_papers",
+    }
+
     def _run_finalize_tool(self, script_name: str, panel: ProcessPanel):
         manuscript = self.manuscript_picker.value()
         if not manuscript:
             QMessageBox.warning(self, "Choose a manuscript", "Pick your manuscript file first.")
             return
-        self.run_in_panel(panel, script_name, [manuscript])
+        args = [manuscript]
+        base = self.finalize_out.value()
+        if base:
+            args += ["--out", str(Path(base) / self.FINALIZE_SUBDIRS[script_name])]
+        self.run_in_panel(panel, script_name, args)
 
     # ---------------- Viewer ----------------
 

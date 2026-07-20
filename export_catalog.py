@@ -27,7 +27,7 @@ import sys
 from collections import Counter
 from datetime import datetime
 
-from doi_resolver import load_config, load_tracking
+from doi_resolver import load_config, load_tracking, resolve_output_path
 from build_index import DB_PATH
 
 DOWNLOADED_STATUSES = ("downloaded", "downloaded_via_proxy")
@@ -76,7 +76,8 @@ def main():
     parser.add_argument("--until", type=int, help="only papers up to this year")
     parser.add_argument("--years", help="specific year(s): 2024, or 2020,2023-2025 (mix of years and ranges)")
     parser.add_argument("--status", help="only rows with this status (e.g. downloaded)")
-    parser.add_argument("--out", help="output file (default catalog_<timestamp>.md)")
+    parser.add_argument("--out", help="output file or folder "
+                        "(default: catalogs/catalog_<timestamp>.md; a folder keeps the default name inside it)")
     args = parser.parse_args()
 
     config = load_config()
@@ -150,7 +151,7 @@ def main():
                 lines += [""]
 
     output = "\n".join(lines)
-    out_path = args.out or f"catalog_{datetime.now():%Y%m%d_%H%M%S}.md"
+    out_path = resolve_output_path(args.out, "catalogs", f"catalog_{datetime.now():%Y%m%d_%H%M%S}.md")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(output)
 

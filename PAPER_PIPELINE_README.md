@@ -70,16 +70,66 @@ Run them in that order. `proxy_download.py` only processes rows Stage 1
 marked `needs_proxy`, and will ask for your login ID and password
 (password entry is hidden — that's normal).
 
-## Files
+## What's in your folder — and what you can safely delete
+
+Everything in the workspace falls into one of four groups.
+
+**1. The tools (keep — this is the pipeline itself)**
 
 | File | Purpose |
 |---|---|
-| `doi_resolver.py` | Stage 1 script |
-| `proxy_download.py` | Stage 2 script |
-| `paper_pipeline_config.yaml` | All settings for both stages |
+| `doi_resolver.py` | Stage 1 — resolve DOIs, fetch metadata, download open-access PDFs |
+| `proxy_download.py` | Stage 2 — download the rest through the university proxy |
+| `download_papers.py` | Runs Stage 1 then Stage 2 in one go |
+| `import_existing_pdfs.py` | Bring PDFs you downloaded elsewhere into the library |
+| `build_index.py` | Build/search the text + figure index of every PDF |
+| `ask_library.py` | Ask the library a question (`--pack` for a Claude upload file) |
+| `export_catalog.py` | Filterable library overview for outline planning |
+| `export_for_claude.py` | Research pack: per-section evidence for drafting |
+| `extract_cited_references.py` | After finalizing: copy every cited PDF out |
+| `extract_cited_figures.py` | After finalizing: pull cited figure/table sources |
+| `export_citation_library.py` | After finalizing: .ris export for EndNote/Zotero |
+| `manuscript_engine.py` | The desktop app that drives all of the above |
+
+**2. Your data and settings (keep — irreplaceable or hand-written)**
+
+| File | Purpose |
+|---|---|
+| `paper_pipeline_config.yaml` | All settings for every script |
 | `paper_pipeline_requirements.txt` | Python package dependencies |
-| `download_tracking.csv` | Generated — running status of every paper |
-| `downloads/` | Generated — where PDFs land |
+| `style_rules.txt` | Your writing-style rules, embedded into research packs |
+| `login_credentials.txt`, `gemini_api_key.txt` | Local-only secrets (never share/commit) |
+| `publication_data/` (or your input .xlsx files) | The paper lists you feed Stage 1 |
+| `download_tracking.csv` / `.xlsx` | The master record of every paper |
+| `human_check_needed.xlsx` | Papers that hit a verification wall — revisit by hand |
+| `downloads/` | Your PDF library |
+| `library_index/` | The search index (rebuildable, but slow — keep it) |
+| Outline files (`*_Outline*.txt`, `PSC_review`, etc.) | Your manuscript outlines |
+
+**3. Generated outputs (disposable — recreate any of them with one command)**
+
+New runs now write these into tidy folders instead of the workspace root:
+
+| Folder | What lands there | Made by |
+|---|---|---|
+| `catalogs/` | `catalog_<timestamp>.md` | `export_catalog.py` |
+| `research_packs/` | `research_pack_<timestamp>.md` | `export_for_claude.py` |
+| `answers/` | question packs and answers | `ask_library.py` |
+| `finalized/<manuscript name>/` | cited PDFs, figures/tables, .ris library | the three finalize tools |
+
+Every one of these also takes `--out` (folder and/or filename of your
+choice), and the desktop app has a "Save to" field in each section —
+leave it blank for the defaults above. Old copies you've already
+uploaded or used can be deleted freely. `python tidy_workspace.py`
+moves any strays from the workspace root into these folders.
+
+**4. Caches and leftovers (safe to delete whenever)**
+
+| Item | What it is |
+|---|---|
+| `__pycache__/`, `debug/` | Python/debug caches — recreated automatically |
+| `browser_profile/` | Stage 2's saved login session — deleting just means signing in again |
+| `pipeline_gui.py` | The old trial GUI, replaced by `manuscript_engine.py` |
 
 ## Tracking CSV columns
 

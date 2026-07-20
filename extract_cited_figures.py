@@ -142,8 +142,13 @@ def main():
         description="Pull the source images/pages for every figure and table cited in a finished manuscript."
     )
     parser.add_argument("manuscript", help="path to the manuscript (.docx, .md, or .txt)")
-    parser.add_argument("--out", default=DEFAULT_OUT_DIR, help=f"destination folder (default: {DEFAULT_OUT_DIR})")
+    parser.add_argument("--out", help="destination folder "
+                        f"(default: finalized/<manuscript name>/{DEFAULT_OUT_DIR})")
     args = parser.parse_args()
+    if not args.out:
+        # Same per-manuscript folder the other finalize tools use.
+        stem = os.path.splitext(os.path.basename(args.manuscript))[0]
+        args.out = os.path.join("finalized", stem, DEFAULT_OUT_DIR)
 
     if not os.path.exists(args.manuscript):
         sys.exit(f"Manuscript not found: {args.manuscript}")

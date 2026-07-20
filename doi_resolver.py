@@ -222,6 +222,25 @@ def sanitize_filename(text, max_len=120):
     return text[:max_len] if text else "untitled"
 
 
+def resolve_output_path(user_value, default_dir, default_name):
+    """Turn a --out value into a concrete file path, accepting all of:
+    nothing (organized default: default_dir/default_name), a folder
+    (that folder + the default name), or a full path with filename
+    (used exactly as given). Parent folders are created either way, so
+    callers can open the result for writing directly."""
+    user_value = str(user_value or "").strip().strip('"')
+    if not user_value:
+        path = os.path.join(default_dir, default_name)
+    elif os.path.isdir(user_value) or user_value.endswith(("/", "\\")):
+        path = os.path.join(user_value, default_name)
+    else:
+        path = user_value
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    return path
+
+
 EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 

@@ -29,7 +29,7 @@ import re
 import sys
 from datetime import datetime
 
-from doi_resolver import load_config
+from doi_resolver import load_config, resolve_output_path
 from ask_library import split_into_subquestions
 import build_index
 
@@ -204,6 +204,8 @@ def main():
     parser.add_argument("--style", default="style_rules.txt",
                         help="text file of writing-style rules to embed "
                              "(default: style_rules.txt if it exists)")
+    parser.add_argument("--out", help="output file or folder (default: "
+                        "research_packs/research_pack_<timestamp>.md; a folder keeps the default name inside it)")
     args = parser.parse_args()
 
     if not os.path.exists(args.outline):
@@ -222,7 +224,7 @@ def main():
     load_config()  # fail early with a clear message if the config is broken
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = f"research_pack_{stamp}.md"
+    out_path = resolve_output_path(args.out, "research_packs", f"research_pack_{stamp}.md")
     pack = build_pack(outline_text, args.per_section, style_text)
 
     with open(out_path, "w", encoding="utf-8") as f:

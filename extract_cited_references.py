@@ -79,11 +79,17 @@ def main():
         description="Copy every PDF cited [Entry N] in a finished manuscript into its own folder."
     )
     parser.add_argument("manuscript", help="path to the manuscript (.docx, .md, or .txt)")
-    parser.add_argument("--out", default=DEFAULT_OUT_DIR, help=f"destination folder (default: {DEFAULT_OUT_DIR})")
+    parser.add_argument("--out", help="destination folder "
+                        f"(default: finalized/<manuscript name>/{DEFAULT_OUT_DIR})")
     args = parser.parse_args()
 
     if not os.path.exists(args.manuscript):
         sys.exit(f"Manuscript not found: {args.manuscript}")
+    if not args.out:
+        # Everything extracted from one manuscript lands under one
+        # folder named after it, so several manuscripts never mix.
+        stem = os.path.splitext(os.path.basename(args.manuscript))[0]
+        args.out = os.path.join("finalized", stem, DEFAULT_OUT_DIR)
 
     config = load_config()
     tracking = load_tracking(config["paths"]["tracking_csv"])
