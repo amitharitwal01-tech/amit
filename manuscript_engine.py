@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QDoubleSpinBox, QSplitter,
     QStackedWidget, QStatusBar, QStyle, QTableWidget, QTableWidgetItem,
-    QTabWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QTabWidget, QTextBrowser, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 try:
@@ -818,7 +818,8 @@ class RecentFilesPanel(QWidget):
 # Main window
 # ===========================================================================
 
-PAGES = ["Home", "Get Papers", "Search & Ask", "Export & Draft", "Finalize Manuscript", "Viewer", "Settings", "Logs"]
+PAGES = ["Home", "Get Papers", "Search & Ask", "Export & Draft", "Finalize Manuscript", "Viewer", "Help", "Settings", "Logs"]
+HELP_GUIDE_FILENAME = "HELP_GUIDE.md"
 
 
 class MainWindow(QMainWindow):
@@ -860,6 +861,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_export_page())
         self.stack.addWidget(self._build_finalize_page())
         self.stack.addWidget(self._build_viewer_page())
+        self.stack.addWidget(self._build_help_page())
         self.stack.addWidget(self._build_settings_page())
         self.stack.addWidget(self._build_logs_page())
         splitter.addWidget(self.stack)
@@ -988,7 +990,7 @@ class MainWindow(QMainWindow):
         icons = [
             QStyle.SP_ComputerIcon, QStyle.SP_ArrowDown, QStyle.SP_FileDialogContentsView,
             QStyle.SP_FileIcon, QStyle.SP_DialogSaveButton, QStyle.SP_FileDialogDetailedView,
-            QStyle.SP_FileDialogInfoView, QStyle.SP_MessageBoxInformation,
+            QStyle.SP_DialogHelpButton, QStyle.SP_FileDialogInfoView, QStyle.SP_MessageBoxInformation,
         ]
         for label, icon in zip(PAGES, icons):
             self.sidebar.addItem(QListWidgetItem(self._std_icon(icon), label))
@@ -1016,9 +1018,10 @@ class MainWindow(QMainWindow):
             hero=True,
         )
         row = QHBoxLayout()
-        for text, page_index in (("Get papers", 1), ("Search & Ask", 2), ("Open viewer", 5)):
+        for text, page_index in (("Get papers", PAGES.index("Get Papers")), ("Search & Ask", PAGES.index("Search & Ask")),
+                                  ("Open viewer", PAGES.index("Viewer")), ("Help", PAGES.index("Help"))):
             b = QPushButton(text)
-            b.setObjectName("Primary" if page_index == 1 else "")
+            b.setObjectName("Primary" if text == "Get papers" else "")
             b.clicked.connect(lambda _=False, i=page_index: self.sidebar.setCurrentRow(i))
             row.addWidget(b)
         row.addStretch()
@@ -1266,7 +1269,7 @@ class MainWindow(QMainWindow):
         self.draft_panel.run_btn.clicked.connect(self.run_export_for_claude)
         draft.layout().addWidget(self.draft_panel)
         edit_style_btn = QPushButton("Edit style_rules.txt")
-        edit_style_btn.clicked.connect(lambda: self.sidebar.setCurrentRow(6))
+        edit_style_btn.clicked.connect(lambda: self.sidebar.setCurrentRow(PAGES.index("Settings")))
         draft.layout().addWidget(edit_style_btn)
         layout.addWidget(draft)
 
@@ -1399,6 +1402,60 @@ class MainWindow(QMainWindow):
             self.home_recent.set_files(files)
         if hasattr(self, "viewer_recent"):
             self.viewer_recent.set_files(files)
+
+    # ---------------- Help ----------------
+
+    def _build_help_page(self) -> QWidget:
+        page = ScrollPage()
+        layout = page.layout()
+
+        card = Card("Help — every step, basic to advanced", "The same guide as the terminal command for each "
+                     "app action, so nothing here needs the app to work. This is also a plain text file, "
+                     f"{HELP_GUIDE_FILENAME}, in your pipeline folder — open it in Notepad any time.")
+
+        self.help_browser = QTextBrowser()
+        self.help_browser.setOpenExternalLinks(True)
+        self.help_browser.setMinimumHeight(420)
+        card.layout().addWidget(self.help_browser, 1)
+
+        btn_row = QHBoxLayout()
+        reload_btn = QPushButton("Reload")
+        reload_btn.clicked.connect(self._load_help_guide)
+        open_file_btn = QPushButton(f"Open {HELP_GUIDE_FILENAME} in the file viewer")
+        open_file_btn.clicked.connect(self._open_help_guide_in_viewer)
+        btn_row.addWidget(reload_btn)
+        btn_row.addWidget(open_file_btn)
+        btn_row.addStretch()
+        card.layout().addLayout(btn_row)
+
+        layout.addWidget(card, 1)
+        self._load_help_guide()
+        return page
+
+    def _help_guide_path(self) -> Path:
+        return Path(self.scripts_dir()) / HELP_GUIDE_FILENAME
+
+    def _load_help_guide(self):
+        path = self._help_guide_path()
+        if not path.exists():
+            self.help_browser.setPlainText(
+                f"{HELP_GUIDE_FILENAME} was not found in:\n{path}\n\n"
+                "Make sure it's in the same folder as the other pipeline scripts (see Settings "
+                "→ Scripts folder)."
+            )
+            return
+        try:
+            self.help_browser.setMarkdown(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            self.help_browser.setPlainText(f"Could not read {path}: {e}")
+
+    def _open_help_guide_in_viewer(self):
+        path = self._help_guide_path()
+        if not path.exists():
+            QMessageBox.warning(self, "Not found", f"{HELP_GUIDE_FILENAME} was not found in:\n{path}")
+            return
+        self.sidebar.setCurrentRow(PAGES.index("Viewer"))
+        self.viewer.open_file(str(path))
 
     # ---------------- Settings ----------------
 

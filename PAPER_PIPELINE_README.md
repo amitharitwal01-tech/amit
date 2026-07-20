@@ -98,6 +98,7 @@ Everything in the workspace falls into one of four groups.
 | `paper_pipeline_config.yaml` | All settings for every script |
 | `paper_pipeline_requirements.txt` | Python package dependencies |
 | `style_rules.txt` | Your writing-style rules, embedded into research packs |
+| `HELP_GUIDE.md` | Full step-by-step walkthrough (app steps + equivalent terminal commands) — also viewable in the app's Help page |
 | `login_credentials.txt`, `gemini_api_key.txt` | Local-only secrets (never share/commit) |
 | `publication_data/` (or your input .xlsx files) | The paper lists you feed Stage 1 |
 | `download_tracking.csv` / `.xlsx` | The master record of every paper |
