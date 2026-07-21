@@ -66,6 +66,12 @@ SI_FILENAME_HINTS = re.compile(r"(support|supplementary|\bsi\b|_si[_.\-]|appendi
 SI_TEXT_HINTS = re.compile(r"supporting information|supplementary (material|information|data|table|figure)", re.IGNORECASE)
 COMPONENT_DOI_SUFFIX = re.compile(r"\.s\d+$", re.IGNORECASE)
 ABSTRACT_HINT = re.compile(r"\babstract\b", re.IGNORECASE)
+# A real Supporting Information PDF's cover page announces exactly this
+# phrase as effectively its own title — right at the top. A document
+# that merely mentions "supporting information"/"supplementary
+# material" somewhere in its body (a reference letter about "supporting
+# documents" for an application, a cover letter, ...) shouldn't count.
+SI_TEXT_POSITION_LIMIT = 500
 
 # A resume/CV that lists the person's own publications contains real,
 # valid-looking DOIs — so "has a DOI" alone isn't enough to call
@@ -81,7 +87,10 @@ PERSONAL_DOC_FILENAME_HINTS = re.compile(
 )
 PERSONAL_DOC_TEXT_HINTS = re.compile(
     r"\bcurriculum vitae\b|\bwork experience\b|\bwork history\b|\bobjective\s*:|"
-    r"\breferences available upon request\b|\bskills\s*:|\bcareer objective\b",
+    r"\breferences available upon request\b|\bskills\s*:|\bcareer objective\b|"
+    r"\bletter of recommendation\b|\bto whom it may concern\b|\bi am writing to recommend\b|"
+    r"\bi am pleased to recommend\b|\bstatement of purpose\b|\bpersonal statement\b|"
+    r"\bdear (admissions|hiring|selection) committee\b",
     re.IGNORECASE,
 )
 # A real paper's own DOI is essentially always near the very top of the
@@ -206,7 +215,11 @@ def classify_pdf(pdf_path, min_pages):
     early_dois = [d for pos, d in all_dois if pos < DOI_POSITION_LIMIT]
     doi = normalize_doi(component) if component else (normalize_doi(early_dois[0]) if early_dois else None)
 
-    if component or SI_FILENAME_HINTS.search(os.path.basename(pdf_path)) or SI_TEXT_HINTS.search(text):
+    if (
+        component
+        or SI_FILENAME_HINTS.search(os.path.basename(pdf_path))
+        or SI_TEXT_HINTS.search(text[:SI_TEXT_POSITION_LIMIT])
+    ):
         return {"kind": "si", "parent_doi": doi, "reason": "component DOI" if component else "filename/text says Supporting Information"}
 
     if doi or (ABSTRACT_HINT.search(text[:4000]) and (page_count_of(pdf_path) or 0) >= min_pages):
