@@ -36,7 +36,7 @@ import sys
 
 import numpy as np
 
-from doi_resolver import build_pdf_filename, load_config, load_tracking
+from doi_resolver import build_pdf_filename, ensure_utf8_console, load_config, load_tracking
 
 INDEX_DIR = "library_index"
 DB_PATH = os.path.join(INDEX_DIR, "library.sqlite3")
@@ -774,6 +774,12 @@ def run_match_figure(image_path, top_k=5):
 
 
 def main():
+    # --search/--find-figure/--match-figure never call load_config() (they
+    # don't need the pipeline config at all), so they'd otherwise miss the
+    # UTF-8 console fix load_config() normally provides — and PDF text
+    # routinely contains ligature characters like "ﬁ" that crash a plain
+    # print() on Windows without it.
+    ensure_utf8_console()
     parser = argparse.ArgumentParser(description="Build/search the local paper index.")
     parser.add_argument("--rebuild", action="store_true", help="re-index everything with scientific section labels")
     # nargs="+" lets the question be typed with or without quotes —

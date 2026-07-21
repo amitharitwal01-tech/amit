@@ -340,7 +340,15 @@ def export_question_pack(question, db, embedder, top_k, out=None):
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print()
-    print(f"Question pack written to {out_path} ({os.path.getsize(out_path) / 1024:.0f} KB).")
+    distinct_papers = len({e for e in used_entries if e})
+    print(f"Question pack written to {out_path} ({os.path.getsize(out_path) / 1024:.0f} KB, "
+          f"{distinct_papers} distinct paper(s) included).")
+    if distinct_papers < top_k:
+        print(
+            f"That's fewer distinct papers than --top ({top_k}) asked for per part — for a broad "
+            "'survey the whole field' question, try a noticeably higher --top (--pack costs nothing "
+            "extra per passage), or ask a few narrower questions instead of one very broad one."
+        )
     print("Upload that file to Claude in chat and it will write the answer.")
 
 
@@ -348,7 +356,10 @@ def main():
     parser = argparse.ArgumentParser(description="Ask your paper library a question (or a whole paragraph).")
     parser.add_argument("question", nargs="*", help="the question; quote it, or use --file")
     parser.add_argument("--file", help="read the question from a text file")
-    parser.add_argument("--top", type=int, default=5, help="passages retrieved per sub-question")
+    parser.add_argument("--top", type=int, default=None,
+                        help="passages retrieved per sub-question (default: 20 with --pack, 5 otherwise — "
+                             "--pack does no AI generation, so more passages cost nothing but a bigger file; "
+                             "raise this a lot, e.g. --top 50, for a broad 'survey the whole field' question)")
     parser.add_argument("--no-ai", action="store_true", help="skip the local AI; verbatim passages only")
     parser.add_argument(
         "--pack", action="store_true",
@@ -367,6 +378,8 @@ def main():
         question = " ".join(args.question).strip()
     if not question:
         parser.error("give a question, either on the command line or with --file")
+    if args.top is None:
+        args.top = 20 if args.pack else 5
 
     config = load_config()
     db = build_index.open_db()
