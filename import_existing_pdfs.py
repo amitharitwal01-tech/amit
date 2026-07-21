@@ -30,6 +30,7 @@ the folder and a confirmation, exactly as before.
 import argparse
 import os
 import re
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -63,7 +64,12 @@ def extract_first_pages_text(pdf_path, pages=2):
     try:
         from pypdf import PdfReader
         reader = PdfReader(pdf_path)
-        return "".join((p.extract_text() or "") for p in reader.pages[:pages])
+        # A newline between pages, not "" — otherwise a DOI (or any
+        # token) that happens to be the very last thing on a page
+        # silently runs into the next page's first word with no space,
+        # corrupting it (e.g. a trailing "...s001" DOI becoming
+        # "...s001Additional").
+        return "\n".join((p.extract_text() or "") for p in reader.pages[:pages])
     except Exception:
         return ""
 
@@ -161,6 +167,81 @@ def import_one_pdf(pdf_path, session, email, timeout, known_dois):
     return {"status": "ok", "record": record}
 
 
+def import_pdf_list(pdf_paths, tracking, tracking_path, downloads_dir, session, email, timeout, delay, known_dois):
+    """Import each PDF in pdf_paths, exactly like the interactive folder
+    flow below — shared so other tools (e.g. a laptop-wide scanner) get
+    the same DOI-matching, enrichment, dedup, and naming without
+    duplicating it. Mutates and incrementally saves `tracking` and
+    `known_dois` in place, same as before.
+
+    Returns (imported, flagged, duplicate, entry_by_source) where
+    entry_by_source maps every processed path (imported OR already a
+    duplicate) to its normalized DOI (or "" if none was found) — a
+    caller matching Supporting Information files to their main article
+    needs this even for papers that turned out to already be in the
+    library.
+    """
+    entry_number = next_entry_number(tracking)
+    imported = duplicate = flagged = 0
+    entry_by_source = {}
+
+    for i, pdf_path in enumerate(pdf_paths, 1):
+        name = os.path.basename(pdf_path)
+        print(f"[{i}/{len(pdf_paths)}] {name[:70]!r}", end=" ... ", flush=True)
+
+        try:
+            result = import_one_pdf(pdf_path, session, email, timeout, known_dois)
+        except Exception as e:
+            print(f"error ({type(e).__name__}: {e}) — skipped")
+            time.sleep(delay)
+            continue
+
+        if result["status"] == "duplicate":
+            print(f"already in library (DOI {result['doi']}) — skipped")
+            entry_by_source[pdf_path] = normalize_doi(result["doi"]) if result["doi"] else ""
+            duplicate += 1
+            time.sleep(delay)
+            continue
+
+        record = result["record"]
+        record["Entry"] = str(entry_number)
+        dest_name = build_pdf_filename(entry_number, record["Category"], record["Year"], record["Title"], record["DOI"])
+        dest_path = os.path.join(downloads_dir, dest_name)
+        if os.path.exists(dest_path):
+            base, ext = os.path.splitext(dest_name)
+            dest_path = os.path.join(downloads_dir, f"{base}_dup{ext}")
+
+        try:
+            shutil.copy2(pdf_path, dest_path)
+        except OSError as e:
+            print(f"could not copy file ({e}) — skipped")
+            time.sleep(delay)
+            continue
+
+        record["PDF_Path"] = dest_path
+        # Keyed by title, same as every other row — a blank/placeholder
+        # title still gets a unique key via the entry number.
+        tracking_key = record["Title"] if record["Title"] else f"(imported entry {entry_number})"
+        tracking[tracking_key] = record
+        if record["DOI"]:
+            known_dois.add(normalize_doi(record["DOI"]))
+        entry_by_source[pdf_path] = normalize_doi(record["DOI"]) if record["DOI"] else ""
+
+        save_tracking(tracking_path, tracking)
+
+        if record["Status"] == "manual_check_needed":
+            print(f"imported as Entry {entry_number} (no DOI found — flagged for a manual check)")
+            flagged += 1
+        else:
+            print(f"imported as Entry {entry_number}")
+            imported += 1
+
+        entry_number += 1
+        time.sleep(delay)
+
+    return imported, flagged, duplicate, entry_by_source
+
+
 def main():
     parser = argparse.ArgumentParser(description="Import manually-downloaded PDFs into the library.")
     parser.add_argument("--folder", help="source folder (skips the interactive prompt)")
@@ -197,72 +278,20 @@ def main():
 
     tracking = load_tracking(tracking_path)
     known_dois = existing_dois(tracking)
-    entry_number = next_entry_number(tracking)
 
     session = requests.Session()
     email = config.get("unpaywall_email", "")
     session.headers.update({"User-Agent": f"paper-pipeline (mailto:{email})"})
 
-    imported = skipped = flagged = 0
-
-    for i, pdf_path in enumerate(candidates, 1):
-        name = os.path.basename(pdf_path)
-        print(f"[{i}/{len(candidates)}] {name[:70]!r}", end=" ... ", flush=True)
-
-        try:
-            result = import_one_pdf(pdf_path, session, email, timeout, known_dois)
-        except Exception as e:
-            print(f"error ({type(e).__name__}: {e}) — skipped")
-            time.sleep(delay)
-            continue
-
-        if result["status"] == "duplicate":
-            print(f"already in library (DOI {result['doi']}) — skipped")
-            skipped += 1
-            time.sleep(delay)
-            continue
-
-        record = result["record"]
-        record["Entry"] = str(entry_number)
-        dest_name = build_pdf_filename(entry_number, record["Category"], record["Year"], record["Title"], record["DOI"])
-        dest_path = os.path.join(downloads_dir, dest_name)
-        if os.path.exists(dest_path):
-            base, ext = os.path.splitext(dest_name)
-            dest_path = os.path.join(downloads_dir, f"{base}_dup{ext}")
-
-        try:
-            import shutil
-            shutil.copy2(pdf_path, dest_path)
-        except OSError as e:
-            print(f"could not copy file ({e}) — skipped")
-            time.sleep(delay)
-            continue
-
-        record["PDF_Path"] = dest_path
-        # Keyed by title, same as every other row — a blank/placeholder
-        # title still gets a unique key via the entry number.
-        tracking_key = record["Title"] if record["Title"] else f"(imported entry {entry_number})"
-        tracking[tracking_key] = record
-        if record["DOI"]:
-            known_dois.add(normalize_doi(record["DOI"]))
-
-        save_tracking(tracking_path, tracking)
-
-        if record["Status"] == "manual_check_needed":
-            print(f"imported as Entry {entry_number} (no DOI found — flagged for a manual check)")
-            flagged += 1
-        else:
-            print(f"imported as Entry {entry_number}")
-            imported += 1
-
-        entry_number += 1
-        time.sleep(delay)
+    imported, flagged, duplicate, _ = import_pdf_list(
+        candidates, tracking, tracking_path, downloads_dir, session, email, timeout, delay, known_dois
+    )
 
     print()
     print(
         f"Done. {imported} paper(s) imported cleanly"
         + (f", {flagged} imported but flagged for a manual metadata check" if flagged else "")
-        + (f", {skipped} already in the library (skipped)" if skipped else "")
+        + (f", {duplicate} already in the library (skipped)" if duplicate else "")
         + f". See {tracking_path}."
     )
 

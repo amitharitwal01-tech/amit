@@ -147,6 +147,32 @@ folder you keep adding to (already-imported papers are skipped).
   python import_existing_pdfs.py --folder "C:\path\to\pdfs" --yes
   ```
 
+### 1f. Scan your whole laptop for papers you already have (e.g. OneDrive)
+
+Terminal only — not in the app. For papers scattered across folders
+rather than collected in one place: reads every PDF it finds, keeps
+only the ones that look like research articles (has a DOI, or an
+Abstract and enough pages — invoices/scans/forms are left alone), and
+matches each Supporting Information PDF to its main article
+automatically (by a shared DOI, or by being the only other PDF in the
+same folder) instead of importing it as if it were its own paper.
+Nothing is copied until you confirm.
+
+```
+python import_from_laptop.py
+```
+(asks which folder(s) to scan, suggesting OneDrive/Documents/Downloads/
+Desktop automatically), or:
+```
+python import_from_laptop.py --roots "C:\Users\me\OneDrive" --dry-run
+python import_from_laptop.py --roots "C:\Users\me\OneDrive" --yes
+```
+Preview first with `--dry-run`, then drop it once you're happy with
+what it found. Writes three log files to `laptop_scan_logs/`: which
+Supporting Information files got attached and how, which ones
+couldn't be matched automatically (worth a manual look), and every
+PDF it decided wasn't a research paper (left completely untouched).
+
 ---
 
 ## 2. Build the search index
