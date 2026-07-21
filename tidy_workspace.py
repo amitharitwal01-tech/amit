@@ -20,6 +20,8 @@ import glob
 import os
 import shutil
 
+from doi_resolver import ensure_utf8_console
+
 MOVE_RULES = [
     ("catalog_*.md", "catalogs"),
     ("research_pack_*.md", "research_packs"),
@@ -29,6 +31,7 @@ MOVE_RULES = [
 
 
 def main():
+    ensure_utf8_console()
     parser = argparse.ArgumentParser(description="Move stray generated files into their organized folders.")
     parser.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     args = parser.parse_args()

@@ -31,7 +31,23 @@ DOI_PREFIXES_TO_STRIP = (
 )
 
 
+def ensure_utf8_console():
+    """Windows consoles often default to a legacy code page (e.g.
+    cp1252) that can't represent characters routinely found in paper
+    titles — non-breaking hyphens, en-dashes, Greek letters, subscripts
+    — which crashes any print() that includes one many papers into a
+    run. Reconfiguring stdout/stderr to UTF-8 with a safe fallback means
+    that can't happen; called from load_config() so every script gets
+    it automatically."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # already UTF-8, or a stream that doesn't support reconfigure (e.g. captured/redirected)
+
+
 def load_config():
+    ensure_utf8_console()
     if not os.path.exists(CONFIG_PATH):
         sys.exit(f"Config file not found: {CONFIG_PATH}")
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
