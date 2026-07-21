@@ -83,6 +83,7 @@ Everything in the workspace falls into one of four groups.
 | `download_papers.py` | Runs Stage 1 then Stage 2 in one go |
 | `import_existing_pdfs.py` | Bring PDFs you downloaded elsewhere into the library |
 | `import_from_laptop.py` | Scan folders (e.g. OneDrive) for research-paper PDFs and import them, matching Supporting Information files to their main article — terminal only |
+| `remove_entry.py` | Remove a paper (tracking row + search index + PDF, moved aside not deleted) — e.g. to undo something imported by mistake |
 | `build_index.py` | Build/search the text + figure index of every PDF |
 | `ask_library.py` | Ask the library a question (`--pack` for a Claude upload file) |
 | `export_catalog.py` | Filterable library overview for outline planning |

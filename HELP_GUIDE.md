@@ -173,6 +173,24 @@ Supporting Information files got attached and how, which ones
 couldn't be matched automatically (worth a manual look), and every
 PDF it decided wasn't a research paper (left completely untouched).
 
+The classifier isn't perfect — it can occasionally still let something
+non-paper through (e.g. a long, DOI-citing personal document). If that
+happens, `remove_entry.py` below undoes it cleanly.
+
+### 1g. Undo an import — remove an entry from the library
+
+Removes a paper's row from the tracking sheet and its entry from the
+search index; its PDF (and any attached Supporting Information file) is
+moved to `removed_pdfs/`, not deleted, in case it turns out to be a
+mistake. Find the Entry number in the console output from whichever
+import step brought it in, or in the tracking sheet.
+
+```
+python remove_entry.py --entry 2165
+python remove_entry.py --entry 2165 2170 2201
+python remove_entry.py --doi 10.1000/example
+```
+
 ---
 
 ## 2. Build the search index

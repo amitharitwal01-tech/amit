@@ -67,6 +67,35 @@ SI_TEXT_HINTS = re.compile(r"supporting information|supplementary (material|info
 COMPONENT_DOI_SUFFIX = re.compile(r"\.s\d+$", re.IGNORECASE)
 ABSTRACT_HINT = re.compile(r"\babstract\b", re.IGNORECASE)
 
+# A resume/CV that lists the person's own publications contains real,
+# valid-looking DOIs — so "has a DOI" alone isn't enough to call
+# something a paper. Filename catches the obvious case directly;
+# multiple independent text hints catch an unhelpfully-named one
+# without flagging a real paper that merely uses one of these words
+# once in passing.
+PERSONAL_DOC_FILENAME_HINTS = re.compile(
+    r"\b(re[sz]ume|curriculum[_\s-]?vitae|\bcv\b|cover[_\s-]?letter|invoice|receipt|"
+    r"passport|visa|transcript|payslip|pay[_\s-]?stub|offer[_\s-]?letter|"
+    r"bank[_\s-]?statement|tax|insurance|application[_\s-]?form)\b",
+    re.IGNORECASE,
+)
+PERSONAL_DOC_TEXT_HINTS = re.compile(
+    r"\bcurriculum vitae\b|\bwork experience\b|\bwork history\b|\bobjective\s*:|"
+    r"\breferences available upon request\b|\bskills\s*:|\bcareer objective\b",
+    re.IGNORECASE,
+)
+# A real paper's own DOI is essentially always near the very top of the
+# first page; a DOI found much later in the extracted text is more
+# likely a citation to someone ELSE's paper (e.g. a CV's Publications
+# list, or a reference list) than this document's own identity.
+DOI_POSITION_LIMIT = 1500
+
+
+def looks_like_personal_document(pdf_path, text):
+    if PERSONAL_DOC_FILENAME_HINTS.search(os.path.basename(pdf_path)):
+        return True
+    return len(PERSONAL_DOC_TEXT_HINTS.findall(text)) >= 2
+
 
 def default_scan_roots():
     """OneDrive (personal or work/school) plus the usual document
@@ -135,8 +164,11 @@ def iter_pdf_paths(roots, exclude_dirs):
 
 
 def raw_dois_in_text(text):
+    """Yield (position, doi) for every DOI-looking match — the position
+    lets callers tell "this document's own DOI, near the top" apart
+    from "a DOI cited somewhere in a reference/publications list"."""
     for match in DOI_IN_TEXT_PATTERN.finditer(text):
-        yield match.group(0).rstrip(").,;]\"'")
+        yield match.start(), match.group(0).rstrip(").,;]\"'")
 
 
 def page_count_of(pdf_path):
@@ -159,9 +191,20 @@ def classify_pdf(pdf_path, min_pages):
     if not text or len(text.strip()) < 40:
         return {"kind": "skip", "reason": "no extractable text (scanned image only, or not a document)"}
 
-    raw_dois = list(raw_dois_in_text(text))
-    component = next((d for d in raw_dois if COMPONENT_DOI_SUFFIX.search(d)), None)
-    doi = normalize_doi(component) if component else (normalize_doi(raw_dois[0]) if raw_dois else None)
+    if looks_like_personal_document(pdf_path, text):
+        return {"kind": "skip", "reason": "looks like a resume/CV or other personal document, not a research paper"}
+
+    all_dois = list(raw_dois_in_text(text))
+    # A component-DOI (Supporting Information) suffix is decisive
+    # regardless of position — publishers print those right next to the
+    # main DOI on an SI cover page.
+    component = next((d for _, d in all_dois if COMPONENT_DOI_SUFFIX.search(d)), None)
+    # For everything else, only trust a DOI as "this document's own" if
+    # it's near the top — a DOI cited deep in a reference or
+    # publications list shouldn't make an unrelated document look like
+    # the paper it merely mentions.
+    early_dois = [d for pos, d in all_dois if pos < DOI_POSITION_LIMIT]
+    doi = normalize_doi(component) if component else (normalize_doi(early_dois[0]) if early_dois else None)
 
     if component or SI_FILENAME_HINTS.search(os.path.basename(pdf_path)) or SI_TEXT_HINTS.search(text):
         return {"kind": "si", "parent_doi": doi, "reason": "component DOI" if component else "filename/text says Supporting Information"}
