@@ -2,7 +2,8 @@
 every downloaded paper.
 
 Reads the tracking sheet, extracts the full text of each downloaded
-PDF, splits it into passages, converts each passage into an embedding
+PDF, detects scientific sections, excludes references and administrative tails,
+splits the remaining text into paragraph-aware passages, converts each passage into an embedding
 (a numerical "meaning fingerprint") with a free local model, and stores
 everything in library_index/library.sqlite3 — linked back to the
 tracking sheet's Entry/DOI/Title/Year/Category so answers can cite
@@ -11,7 +12,10 @@ properly.
 Figures are indexed too: each figure image is saved, paired with its
 caption (the paper's own description of it), and given a visual
 fingerprint (CLIP embedding) — so figures can be found by describing
-them in words, or by showing a similar image.
+them in words, or by showing a similar image. Saved figure filenames
+follow the same <Entry>_<Category>_<Year>_<Title> pattern as the PDFs
+in downloads/, so a file in library_index/figures/ is traceable back to
+its paper at a glance instead of by a cryptic DOI string.
 
 Usage:
     python build_index.py                        # index new/changed papers
@@ -32,7 +36,7 @@ import sys
 
 import numpy as np
 
-from doi_resolver import load_config, load_tracking, sanitize_filename
+from doi_resolver import build_pdf_filename, load_config, load_tracking
 
 INDEX_DIR = "library_index"
 DB_PATH = os.path.join(INDEX_DIR, "library.sqlite3")
@@ -45,8 +49,39 @@ EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 # Visual fingerprints for figure images (also a one-time download).
 IMAGE_EMBED_MODEL = "Qdrant/clip-ViT-B-32-vision"
 
-CHUNK_TARGET_CHARS = 1200
-CHUNK_OVERLAP_CHARS = 200
+CHUNK_TARGET_CHARS = 1400
+CHUNK_MIN_CHARS = 250
+PARAGRAPH_OVERLAP = 1
+
+# Retrieval settings. Semantic similarity remains the main signal, while
+# exact scientific terms and evidence-bearing sections receive a modest boost.
+CANDIDATE_MULTIPLIER = 12
+MAX_RESULTS_PER_PAPER = 2
+NEIGHBOUR_CHUNKS = 1
+
+SECTION_WEIGHTS = {
+    "results_discussion": 1.12,
+    "results": 1.12,
+    "discussion": 1.08,
+    "methods": 1.05,
+    "experimental": 1.05,
+    "table_caption": 1.06,
+    "figure_caption": 1.04,
+    "conclusion": 1.02,
+    "abstract": 1.00,
+    "introduction": 0.94,
+    "main_body": 0.98,
+    "unknown": 0.96,
+}
+
+# These sections are administrative or bibliographic rather than scientific
+# evidence. Once references begin, the remaining PDF text is not indexed.
+STOP_SECTION_NAMES = {
+    "references", "bibliography", "acknowledgment", "acknowledgments",
+    "acknowledgement", "acknowledgements", "author contributions",
+    "author contribution", "conflict of interest", "conflicts of interest",
+    "competing interests", "funding", "publisher's note", "publisher note",
+}
 
 # Embedded images smaller than this are logos, ORCID icons, etc.
 MIN_FIGURE_PIXELS = 120
@@ -79,11 +114,21 @@ def open_db():
         )"""
     )
     db.execute("CREATE INDEX IF NOT EXISTS figures_doi ON figures(doi)")
-    # Older index files predate the 'kind' column — add it in place so
-    # nobody has to rebuild just because the schema grew.
+    # Add scientific-context columns to older index files in place. A full
+    # --rebuild is still required once so existing passages receive values.
     columns = [r[1] for r in db.execute("PRAGMA table_info(chunks)")]
-    if "kind" not in columns:
-        db.execute("ALTER TABLE chunks ADD COLUMN kind TEXT DEFAULT 'text'")
+    migrations = {
+        "kind": "TEXT DEFAULT 'text'",
+        "section": "TEXT DEFAULT 'unknown'",
+        "chunk_index": "INTEGER",
+        "page_end": "INTEGER",
+    }
+    for column, sql_type in migrations.items():
+        if column not in columns:
+            db.execute(f"ALTER TABLE chunks ADD COLUMN {column} {sql_type}")
+    db.execute("CREATE INDEX IF NOT EXISTS chunks_section ON chunks(section)")
+    db.execute("CREATE INDEX IF NOT EXISTS chunks_order ON chunks(doi, chunk_index)")
+    db.commit()
     return db
 
 
@@ -126,9 +171,25 @@ def clean_page_text(text):
     return text.strip()
 
 
+def _page_text_in_reading_order(page):
+    """Extract text blocks in approximate human reading order.
+
+    Sorting blocks by vertical and then horizontal position is more reliable
+    for journal PDFs than accepting an arbitrary object order. The original
+    line breaks are retained because section and paragraph detection need them.
+    """
+    blocks = page.get_text("blocks")
+    useful = []
+    for block in blocks:
+        x0, y0, x1, y1, block_text = block[:5]
+        cleaned = clean_page_text(block_text)
+        if cleaned:
+            useful.append((round(y0 / 8) * 8, x0, cleaned))
+    useful.sort(key=lambda item: (item[0], item[1]))
+    return clean_page_text("\n\n".join(item[2] for item in useful))
+
+
 def extract_pages(pdf_path):
-    # PyMuPDF reads scientific-journal layouts (two columns, figures)
-    # far more faithfully than lighter libraries.
     try:
         import fitz
     except ImportError:
@@ -140,30 +201,130 @@ def extract_pages(pdf_path):
     pages = []
     with fitz.open(pdf_path) as doc:
         for number, page in enumerate(doc, 1):
-            text = clean_page_text(page.get_text("text"))
+            text = _page_text_in_reading_order(page)
             if text:
                 pages.append((number, text))
     return pages
 
 
-def chunk_page_text(text):
-    # Passages of ~CHUNK_TARGET_CHARS, split at paragraph boundaries,
-    # with a small tail of the previous chunk carried over so a
-    # sentence cut by the split is still findable in one piece.
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+def _normalise_heading(text):
+    value = re.sub(r"^\s*(?:\d+(?:\.\d+)*|[IVXLC]+)[.)]?\s*", "", text.strip(), flags=re.I)
+    value = re.sub(r"\s+", " ", value).strip(" .:–—-").lower()
+    aliases = {
+        "summary": "abstract",
+        "background": "introduction",
+        "materials and methods": "methods",
+        "materials & methods": "methods",
+        "methodology": "methods",
+        "experimental section": "experimental",
+        "experiments": "experimental",
+        "results and discussion": "results_discussion",
+        "results & discussion": "results_discussion",
+        "discussion and results": "results_discussion",
+        "conclusions": "conclusion",
+        "concluding remarks": "conclusion",
+    }
+    return aliases.get(value, value.replace(" ", "_"))
+
+
+def _looks_like_heading(line):
+    stripped = re.sub(r"\s+", " ", line.strip())
+    if not stripped or len(stripped) > 90:
+        return None
+    normalised = _normalise_heading(stripped)
+    recognised = {
+        "abstract", "introduction", "methods", "experimental", "results",
+        "discussion", "results_discussion", "conclusion", "references",
+        "bibliography", "acknowledgment", "acknowledgments", "acknowledgement",
+        "acknowledgements", "author_contributions", "author_contribution",
+        "conflict_of_interest", "conflicts_of_interest", "competing_interests",
+        "funding", "publisher's_note", "publisher_note",
+    }
+    if normalised in recognised:
+        return normalised
+    # Accept short numbered/title-case headings, but not ordinary sentences.
+    numbered = bool(re.match(r"^\s*\d+(?:\.\d+)*[.)]?\s+[A-Za-z]", line))
+    title_like = stripped.isupper() or (
+        len(stripped.split()) <= 7
+        and not stripped.endswith((".", ",", ";", "?", "!"))
+        and sum(word[:1].isupper() for word in stripped.split()) >= max(1, len(stripped.split()) - 1)
+    )
+    if numbered or title_like:
+        return normalised
+    return None
+
+
+def section_paragraphs(pages):
+    """Return (section, page, paragraph) while excluding non-evidence tails."""
+    current_section = "unknown"
+    output = []
+    stop = False
+    for page_number, page_text in pages:
+        if stop:
+            break
+        for raw in re.split(r"\n+", page_text):
+            paragraph = raw.strip()
+            if not paragraph:
+                continue
+            heading = _looks_like_heading(paragraph)
+            if heading:
+                heading_words = heading.replace("_", " ")
+                if heading_words in STOP_SECTION_NAMES or heading in {
+                    "references", "bibliography", "acknowledgment", "acknowledgments",
+                    "acknowledgement", "acknowledgements", "author_contributions",
+                    "author_contribution", "conflict_of_interest", "conflicts_of_interest",
+                    "competing_interests", "funding", "publisher's_note", "publisher_note",
+                }:
+                    stop = True
+                    break
+                current_section = heading
+                continue
+            # Repeated headers, footers, page numbers and very short fragments
+            # add retrieval noise but little scientific meaning.
+            if re.fullmatch(r"(?:page\s*)?\d+(?:\s*of\s*\d+)?", paragraph, re.I):
+                continue
+            if len(paragraph) < 35 and not re.search(r"\d", paragraph):
+                continue
+            output.append((current_section, page_number, paragraph))
+    return output
+
+
+def chunk_scientific_text(pages):
+    """Build paragraph-respecting chunks that never cross section boundaries."""
+    paragraphs = section_paragraphs(pages)
     chunks = []
-    current = ""
-    for para in paragraphs:
-        if current and len(current) + len(para) + 1 > CHUNK_TARGET_CHARS:
-            chunks.append(current)
-            tail = current[-CHUNK_OVERLAP_CHARS:]
-            # Start the carried-over tail at a word boundary.
-            current = tail.split(" ", 1)[-1] if " " in tail else tail
-        current = f"{current} {para}".strip() if current else para
-    # Keep a trailing fragment only if it's substantial (or the page
-    # produced nothing else) — lone caption scraps aren't worth a row.
-    if current and (len(current) >= 200 or not chunks):
-        chunks.append(current)
+    section_buffer = []
+    current_section = None
+
+    def flush_section(items, section):
+        if not items:
+            return
+        current = []
+        current_length = 0
+        for page_number, paragraph in items:
+            added = len(paragraph) + (1 if current else 0)
+            if current and current_length + added > CHUNK_TARGET_CHARS:
+                text = "\n".join(p for _, p in current)
+                if len(text) >= CHUNK_MIN_CHARS:
+                    chunks.append((section or "unknown", current[0][0], current[-1][0], text))
+                current = current[-PARAGRAPH_OVERLAP:] if PARAGRAPH_OVERLAP else []
+                current_length = sum(len(p) + 1 for _, p in current)
+            current.append((page_number, paragraph))
+            current_length += added
+        if current:
+            text = "\n".join(p for _, p in current)
+            if len(text) >= CHUNK_MIN_CHARS or not chunks:
+                chunks.append((section or "unknown", current[0][0], current[-1][0], text))
+
+    for section, page_number, paragraph in paragraphs:
+        if current_section is None:
+            current_section = section
+        if section != current_section:
+            flush_section(section_buffer, current_section)
+            section_buffer = []
+            current_section = section
+        section_buffer.append((page_number, paragraph))
+    flush_section(section_buffer, current_section)
     return chunks
 
 
@@ -244,7 +405,7 @@ def embed_passages(embedder, texts):
     return vectors / norms
 
 
-def index_figures(db, embedder, image_embedder, key, pdf_path):
+def index_figures(db, embedder, image_embedder, key, pdf_path, row):
     # Old figure files first, so a re-index doesn't leave orphans.
     for (old_path,) in db.execute("SELECT image_path FROM figures WHERE doi = ?", (key,)):
         try:
@@ -258,7 +419,15 @@ def index_figures(db, embedder, image_embedder, key, pdf_path):
         return 0
 
     os.makedirs(FIGURES_DIR, exist_ok=True)
-    base = sanitize_filename(key.replace("/", "_"))
+    # Same <Entry>_<Category>_<Year>_<Title> pattern as the PDF itself —
+    # not a DOI/path-derived name — so a file in library_index/figures/
+    # is traceable back to its paper at a glance, exactly like the PDFs
+    # in downloads/ already are. Entry alone is unique per paper, so this
+    # can't collide even when Category/Year/Title are blank.
+    base = os.path.splitext(build_pdf_filename(
+        row.get("Entry", ""), row.get("Category", ""), row.get("Year", ""),
+        row.get("Title", ""), row.get("DOI", ""),
+    ))[0]
     saved = []
     for n, (page_number, caption, data, ext) in enumerate(figures, 1):
         image_path = os.path.join(FIGURES_DIR, f"{base}_p{page_number}_{n}.{ext}")
@@ -292,9 +461,9 @@ def index_figures(db, embedder, image_embedder, key, pdf_path):
     if captioned:
         vectors = embed_passages(embedder, [text for _, text in captioned])
         db.executemany(
-            "INSERT INTO chunks(doi, page, text, embedding, kind) VALUES (?, ?, ?, ?, 'figure')",
+            "INSERT INTO chunks(doi, page, page_end, text, embedding, kind, section) VALUES (?, ?, ?, ?, ?, 'figure', 'figure_caption')",
             [
-                (key, page_number, text, vector.tobytes())
+                (key, page_number, page_number, text, vector.tobytes())
                 for (page_number, text), vector in zip(captioned, vectors)
             ],
         )
@@ -312,38 +481,37 @@ def index_paper(db, embedder, image_embedder, row):
 
     db.execute("DELETE FROM chunks WHERE doi = ?", (key,))
 
-    page_chunks = []
-    for number, text in pages:
-        for chunk in chunk_page_text(text):
-            page_chunks.append((number, chunk))
-    if not page_chunks:
+    scientific_chunks = chunk_scientific_text(pages)
+    if not scientific_chunks:
         return 0, 0, "nothing substantial to index"
 
-    vectors = embed_passages(embedder, [c for _, c in page_chunks])
+    vectors = embed_passages(embedder, [item[3] for item in scientific_chunks])
     db.executemany(
-        "INSERT INTO chunks(doi, page, text, embedding) VALUES (?, ?, ?, ?)",
+        """INSERT INTO chunks
+           (doi, page, page_end, text, embedding, kind, section, chunk_index)
+           VALUES (?, ?, ?, ?, ?, 'text', ?, ?)""",
         [
-            (key, number, chunk, vector.tobytes())
-            for (number, chunk), vector in zip(page_chunks, vectors)
+            (key, page_start, page_end, chunk, vector.tobytes(), section, chunk_index)
+            for chunk_index, ((section, page_start, page_end, chunk), vector)
+            in enumerate(zip(scientific_chunks, vectors), 1)
         ],
     )
 
-    figure_count = index_figures(db, embedder, image_embedder, key, pdf_path)
+    figure_count = index_figures(db, embedder, image_embedder, key, pdf_path, row)
 
-    # Table captions become their own labeled index entries too — a
-    # table is often exactly the citable comparison a review needs, and
-    # the [Table, p.N] label survives into research packs.
     table_chunks = []
-    for number, text in pages:
-        for caption in extract_captions(text, TABLE_CAPTION_START):
+    for number, page_text in pages:
+        for caption in extract_captions(page_text, TABLE_CAPTION_START):
             table_chunks.append((number, f"[Table, p.{number}] {caption}"))
     if table_chunks:
-        vectors = embed_passages(embedder, [t for _, t in table_chunks])
+        vectors = embed_passages(embedder, [item[1] for item in table_chunks])
         db.executemany(
-            "INSERT INTO chunks(doi, page, text, embedding, kind) VALUES (?, ?, ?, ?, 'table')",
+            """INSERT INTO chunks
+               (doi, page, page_end, text, embedding, kind, section)
+               VALUES (?, ?, ?, ?, ?, 'table', 'table_caption')""",
             [
-                (key, number, text, vector.tobytes())
-                for (number, text), vector in zip(table_chunks, vectors)
+                (key, number, number, caption, vector.tobytes())
+                for (number, caption), vector in zip(table_chunks, vectors)
             ],
         )
 
@@ -353,11 +521,11 @@ def index_paper(db, embedder, image_embedder, row):
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             key, row.get("Entry", ""), row.get("Title", ""), row.get("Year", ""),
-            row.get("Category", ""), pdf_path, os.path.getmtime(pdf_path), len(page_chunks),
+            row.get("Category", ""), pdf_path, os.path.getmtime(pdf_path), len(scientific_chunks),
         ),
     )
     db.commit()
-    return len(page_chunks), figure_count, ""
+    return len(scientific_chunks), figure_count, ""
 
 
 def papers_to_index(db, tracking, rebuild=False):
@@ -431,13 +599,64 @@ def run_indexing(rebuild=False):
     print("      python build_index.py --match-figure path\\to\\your_image.png")
 
 
+def _query_terms(query):
+    # Keep formulae, abbreviations and numbers that semantic search can blur.
+    terms = re.findall(r"[A-Za-z][A-Za-z0-9+\-_.]{2,}|\d+(?:\.\d+)?%?", query.lower())
+    stop = {"the", "and", "for", "with", "from", "that", "this", "what", "which", "was", "were", "are"}
+    return [term for term in terms if term not in stop]
+
+
+def _exact_term_score(query, text, title):
+    terms = _query_terms(query)
+    if not terms:
+        return 0.0
+    haystack = f"{title} {text}".lower()
+    matched = sum(1 for term in terms if term in haystack)
+    return matched / len(terms)
+
+
+def _expand_with_neighbours(db, row):
+    text, page, page_end, embedding, kind, section, chunk_index, entry, title, year, category, doi = row
+    if kind != "text" or chunk_index is None or NEIGHBOUR_CHUNKS <= 0:
+        return text
+    neighbours = db.execute(
+        """SELECT chunk_index, text FROM chunks
+           WHERE doi = ? AND kind = 'text' AND section = ?
+             AND chunk_index BETWEEN ? AND ?
+           ORDER BY chunk_index""",
+        (doi, section, chunk_index - NEIGHBOUR_CHUNKS, chunk_index + NEIGHBOUR_CHUNKS),
+    ).fetchall()
+    if len(neighbours) <= 1:
+        return text
+    blocks = []
+    for neighbour_index, neighbour_text in neighbours:
+        marker = "MATCH" if neighbour_index == chunk_index else "CONTEXT"
+        blocks.append(f"[{marker}] {neighbour_text}")
+    return "\n\n".join(blocks)
+
+
 def retrieve(db, embedder, query, top_k=5, kind=None):
-    # The reusable heart of every search mode (and of ask_library.py):
-    # returns the top passages as dicts instead of printing them.
-    kind_filter = "WHERE c.kind = 'figure'" if kind == "figure" else ""
+    """Section-aware hybrid retrieval, compatible with existing callers.
+
+    Existing dictionary keys are preserved. Additional keys expose section,
+    page range, chunk order, semantic score and lexical score.
+    """
+    if kind == "figure":
+        kind_filter = "WHERE c.kind = 'figure'"
+    else:
+        kind_filter = "WHERE c.kind IN ('text', 'figure', 'table')"
     rows = db.execute(
-        f"""SELECT c.text, c.page, c.embedding, p.entry, p.title, p.year, p.category, p.doi
-            FROM chunks c JOIN papers p ON p.doi = c.doi {kind_filter}"""
+        f"""SELECT c.text, c.page, COALESCE(c.page_end, c.page), c.embedding,
+                   c.kind, COALESCE(c.section, 'unknown'), c.chunk_index,
+                   p.entry, p.title, p.year, p.category, p.doi
+            FROM chunks c JOIN papers p ON p.doi = c.doi {kind_filter}
+            WHERE c.embedding IS NOT NULL"""
+        if not kind_filter else
+        f"""SELECT c.text, c.page, COALESCE(c.page_end, c.page), c.embedding,
+                   c.kind, COALESCE(c.section, 'unknown'), c.chunk_index,
+                   p.entry, p.title, p.year, p.category, p.doi
+            FROM chunks c JOIN papers p ON p.doi = c.doi {kind_filter}
+              AND c.embedding IS NOT NULL"""
     ).fetchall()
     if not rows:
         return []
@@ -447,18 +666,53 @@ def retrieve(db, embedder, query, top_k=5, kind=None):
     if norm:
         query_vector /= norm
 
-    matrix = np.frombuffer(b"".join(r[2] for r in rows), dtype=np.float32).reshape(len(rows), -1)
-    scores = matrix @ query_vector
-    best = np.argsort(scores)[::-1][:top_k]
+    matrix = np.frombuffer(b"".join(row[3] for row in rows), dtype=np.float32).reshape(len(rows), -1)
+    semantic_scores = matrix @ query_vector
 
-    return [
-        {
-            "text": rows[i][0], "page": rows[i][1], "entry": rows[i][3],
-            "title": rows[i][4], "year": rows[i][5], "category": rows[i][6],
-            "doi": rows[i][7], "score": float(scores[i]),
-        }
-        for i in best
-    ]
+    scored = []
+    for index, row in enumerate(rows):
+        semantic = float(semantic_scores[index])
+        lexical = _exact_term_score(query, row[0], row[8])
+        section_weight = SECTION_WEIGHTS.get(row[5], 0.98)
+        # Semantic meaning dominates; exact scientific terms improve precision.
+        combined = (0.82 * semantic + 0.18 * lexical) * section_weight
+        scored.append((combined, semantic, lexical, index))
+    scored.sort(reverse=True)
+
+    candidate_limit = max(top_k * CANDIDATE_MULTIPLIER, top_k)
+    selected = []
+    per_paper = {}
+    for combined, semantic, lexical, index in scored[:candidate_limit]:
+        row = rows[index]
+        doi = row[11]
+        if per_paper.get(doi, 0) >= MAX_RESULTS_PER_PAPER:
+            continue
+        per_paper[doi] = per_paper.get(doi, 0) + 1
+        selected.append((combined, semantic, lexical, row))
+        if len(selected) >= top_k:
+            break
+
+    results = []
+    for combined, semantic, lexical, row in selected:
+        text, page, page_end, _embedding, kind_value, section, chunk_index, entry, title, year, category, doi = row
+        results.append({
+            "text": _expand_with_neighbours(db, row),
+            "matched_text": text,
+            "page": page,
+            "page_end": page_end,
+            "entry": entry,
+            "title": title,
+            "year": year,
+            "category": category,
+            "doi": doi,
+            "kind": kind_value,
+            "section": section,
+            "chunk_index": chunk_index,
+            "score": combined,
+            "semantic_score": semantic,
+            "lexical_score": lexical,
+        })
+    return results
 
 
 def run_search(query, top_k=5, kind=None):
@@ -475,7 +729,9 @@ def run_search(query, top_k=5, kind=None):
     print(f"Top {len(results)} passages for: {query!r}")
     for rank, r in enumerate(results, 1):
         print()
-        print(f"--- {rank}. [Entry {r['entry']} | {r['year']} | {r['category']}] {r['title'][:80]}  (p.{r['page']}, score {r['score']:.2f})")
+        pages = f"p.{r['page']}" if r['page_end'] == r['page'] else f"pp.{r['page']}-{r['page_end']}"
+        section = r.get("section", "unknown").replace("_", " ").title()
+        print(f"--- {rank}. [Entry {r['entry']} | {r['year']} | {r['category']} | {section}] {r['title'][:80]}  ({pages}, score {r['score']:.2f})")
         print(r["text"])
 
 
@@ -519,7 +775,7 @@ def run_match_figure(image_path, top_k=5):
 
 def main():
     parser = argparse.ArgumentParser(description="Build/search the local paper index.")
-    parser.add_argument("--rebuild", action="store_true", help="re-index everything from scratch")
+    parser.add_argument("--rebuild", action="store_true", help="re-index everything with scientific section labels")
     # nargs="+" lets the question be typed with or without quotes —
     # every word after the flag belongs to the query.
     parser.add_argument("--search", metavar="QUERY", nargs="+", help="show the best-matching passages for a question")

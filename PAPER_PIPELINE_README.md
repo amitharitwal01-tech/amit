@@ -108,7 +108,7 @@ Everything in the workspace falls into one of four groups.
 | `download_tracking.csv` / `.xlsx` | The master record of every paper |
 | `human_check_needed.xlsx` | Papers that hit a verification wall — revisit by hand |
 | `downloads/` | Your PDF library |
-| `library_index/` | The search index (rebuildable, but slow — keep it) |
+| `library_index/` | The search index (rebuildable, but slow — keep it). Figure images in `library_index/figures/` are named the same `<Entry>_<Category>_<Year>_<Title>_p<page>_<n>.<ext>` way as the PDFs in `downloads/`, so one is traceable back to its paper at a glance. |
 | Outline files (`*_Outline*.txt`, `PSC_review`, etc.) | Your manuscript outlines |
 
 **3. Generated outputs (disposable — recreate any of them with one command)**
