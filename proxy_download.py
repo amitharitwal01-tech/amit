@@ -923,39 +923,62 @@ def find_meta_pdf_url(page):
     return find_meta_content(page, "citation_pdf_url")
 
 
-PDF_HREF_PATTERN = re.compile(r"pdfft|/pdfdirect/|/epdf/|\.pdf(?:$|\?)", re.IGNORECASE)
+PDF_HREF_PATTERN = re.compile(
+    r"pdfft"                        # ScienceDirect "View PDF"
+    r"|/pdfdirect/"                 # Wiley reader's real bytes endpoint
+    r"|/epdf/"                      # Wiley/T&F enhanced-PDF
+    r"|/doi/pdf/"                   # ACS/others direct PDF path
+    r"|article-?pdf"               # RSC / Oxford Academic / other Silverchair: /ee/article-pdf/..., /content/articlepdf/...
+    r"|getpdf"                      # some platforms' download endpoint
+    r"|silverchair-cdn[^\"']*\.pdf"  # a Silverchair signed CDN URL linked directly
+    r"|\.pdf(?:$|\?)",              # generic ".pdf" (optionally with a query string)
+    re.IGNORECASE,
+)
 
 
 def find_pdf_link_by_href(page):
     # Publisher-agnostic: an anchor whose href points at a PDF-serving
-    # endpoint — ScienceDirect's "/pdfft?..." View PDF link (confirmed
-    # present in a real failure snapshot), Wiley's /pdfdirect/, generic
-    # ".pdf" links. Matching on the href catches links whose visible
-    # label ("View PDF", an icon, ...) the name-based layers miss.
-    try:
-        anchors = page.query_selector_all("a[href]")
-    except Exception:
-        return None
-    for anchor in anchors:
-        try:
-            href = anchor.get_attribute("href") or ""
-        except Exception:
-            continue
-        if not PDF_HREF_PATTERN.search(href):
-            continue
-        label_parts = []
-        for getter in (
-            lambda: anchor.inner_text(),
-            lambda: anchor.get_attribute("aria-label"),
-            lambda: anchor.get_attribute("title"),
-        ):
+    # endpoint — ScienceDirect's "/pdfft?..." View PDF link, Wiley's
+    # /pdfdirect/, RSC/Silverchair's /article-pdf/ link (which 302s to a
+    # signed silverchair-cdn.com URL), generic ".pdf" links. Matching on
+    # the href catches links whose visible label ("View PDF", an icon,
+    # ...) the name-based layers miss.
+    #
+    # Silverchair platforms (RSC, Oxford Academic, ...) render the PDF
+    # link a moment after the article page's initial load, so if the
+    # first pass finds nothing, wait briefly and look once more — no cost
+    # on pages that already have the link, since a hit returns straight
+    # away.
+    for attempt in range(2):
+        if attempt:
             try:
-                label_parts.append(getter() or "")
+                page.wait_for_timeout(2500)
             except Exception:
-                pass
-        if SUPPLEMENTARY_HINT_PATTERN.search(" ".join(label_parts)):
-            continue
-        return urljoin(page.url, href)
+                return None
+        try:
+            anchors = page.query_selector_all("a[href]")
+        except Exception:
+            return None
+        for anchor in anchors:
+            try:
+                href = anchor.get_attribute("href") or ""
+            except Exception:
+                continue
+            if not PDF_HREF_PATTERN.search(href):
+                continue
+            label_parts = []
+            for getter in (
+                lambda: anchor.inner_text(),
+                lambda: anchor.get_attribute("aria-label"),
+                lambda: anchor.get_attribute("title"),
+            ):
+                try:
+                    label_parts.append(getter() or "")
+                except Exception:
+                    pass
+            if SUPPLEMENTARY_HINT_PATTERN.search(" ".join(label_parts)):
+                continue
+            return urljoin(page.url, href)
     return None
 
 
