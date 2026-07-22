@@ -401,16 +401,21 @@ def build_candidate_urls(row, config):
         if publisher_url.lower().split("?")[0].endswith(".pdf"):
             candidates.append(apply_hostname_mangling_proxy(publisher_url, suffix))
 
-        # Elsevier/ScienceDirect (10.1016): PDF URLs are built from the
-        # article's PII — the ID in Stage 1's resolved URL — not from
-        # the DOI, so the generic path templates can't cover it.
-        # /pdfft?...download=true is the link ScienceDirect's own
-        # "Download PDF" button uses (confirmed in a failure snapshot).
+        # Elsevier/ScienceDirect (10.1016, including Cell Press titles like
+        # Joule): do NOT deep-link the /pdfft download endpoint. Elsevier's
+        # anti-text-mining system reads a cold, direct hit to that endpoint
+        # as scraping and blocks the whole institution's IP — its "There was
+        # a problem providing the content you requested" / CLOUDFLARE_ERROR_
+        # 1000S page (confirmed in a failure snapshot for Joule DOIs). Land
+        # on the article page instead and let the on-page "View PDF" link be
+        # clicked through (Layer 2b in try_download_paper), which looks like
+        # a normal reader. The DOI proxy URL below already redirects here;
+        # building the article URL straight from the PII is a surer landing
+        # when Stage 1 resolved one.
         pii_match = re.search(r"/pii/(S[0-9A-Z]{15,18})", publisher_url, re.IGNORECASE)
         if "sciencedirect.com" in publisher_url.lower() and pii_match:
             candidates.append(apply_hostname_mangling_proxy(
-                f"https://www.sciencedirect.com/science/article/pii/{pii_match.group(1)}"
-                "/pdfft?isDTMRedir=true&download=true",
+                f"https://www.sciencedirect.com/science/article/pii/{pii_match.group(1)}",
                 suffix,
             ))
 
@@ -855,12 +860,50 @@ def looks_like_no_subscription_page(page):
     return any(phrase in content for phrase in NO_SUBSCRIPTION_PHRASES)
 
 
+# Elsevier/ScienceDirect's anti-text-mining block: after too many or
+# too-fast automated requests it stops serving content to the whole
+# institution IP and shows a "There was a problem providing the content
+# you requested" page (a Cloudflare 1000-series error box). Unlike a
+# bot-check there's no box to tick — the block sits on the IP and lifts
+# on its own after a while.
+PUBLISHER_BLOCK_PHRASES = (
+    "there was a problem providing the content you requested",
+    "cloudflare_error_1000s",
+)
+
+PUBLISHER_BLOCK_REASON = (
+    "the publisher to lift an automated-access (IP) block: Elsevier/ScienceDirect "
+    "blocked this institution's IP for too-fast automated access. It clears on its "
+    "own after a while — retry these in a later run, or fetch them by hand"
+)
+
+
+def looks_like_publisher_ip_block_page(page):
+    try:
+        content = (page.content() or "").lower()
+    except Exception:
+        return False
+    return any(phrase in content for phrase in PUBLISHER_BLOCK_PHRASES)
+
+
 def describe_manual_step_needed(page):
+    # IP block first: it can't be clicked through, so it must not be
+    # mistaken for a bot-check the user could complete.
+    if looks_like_publisher_ip_block_page(page):
+        return PUBLISHER_BLOCK_REASON
     if looks_like_bot_challenge_page(page):
         return "a quick human/bot-check (tick the verification box)"
     if looks_like_login_page(page):
         return "a fresh login"
     return None
+
+
+def is_elsevier_paper(row):
+    # DOI prefix 10.1016 is Elsevier (ScienceDirect), which includes Cell
+    # Press titles like Joule; Publisher_URL is the surer signal when set.
+    doi = row.get("DOI") or ""
+    publisher = (row.get("Publisher_URL") or "").lower()
+    return doi.startswith("10.1016") or "sciencedirect.com" in publisher or "elsevier" in publisher
 
 
 def find_meta_content(page, name):
@@ -1341,9 +1384,27 @@ def main():
         ensure_logged_in(page, login_cfg, username, password, first_fallback_url)
 
         browser_died = False
+        # Once Elsevier IP-blocks this run, every later ScienceDirect
+        # request just hits the same wall — and keeps the block alive.
+        # Skip the rest of the Elsevier papers instead of hammering.
+        elsevier_blocked = False
 
         for i, row in enumerate(pending, 1):
             title = row["Title"]
+
+            if elsevier_blocked and is_elsevier_paper(row):
+                print(f"[{i}/{len(pending)}] {title[:70]!r} ... skipped (Elsevier IP block active this run)")
+                mark_manual_check(
+                    row,
+                    "Skipped this run: Elsevier/ScienceDirect IP-blocked automated access earlier "
+                    f"in this run. Retry in a later run once the block clears. {HUMAN_CHECK_MARKER} "
+                    f"(listed in {HUMAN_CHECK_XLSX})",
+                )
+                failed_count += 1
+                save_tracking(tracking_path, tracking)
+                save_human_check_list(tracking)
+                continue
+
             print(f"[{i}/{len(pending)}] {title[:70]!r}", end=" ... ")
 
             target_urls = build_candidate_urls(row, config)
@@ -1391,6 +1452,14 @@ def main():
                 mark_downloaded(row, dest_path)
                 downloaded_count += 1
                 print("downloaded")
+            elif blocked_reason == PUBLISHER_BLOCK_REASON:
+                mark_manual_check(
+                    row,
+                    f"Needs {blocked_reason}. {HUMAN_CHECK_MARKER} (listed in {HUMAN_CHECK_XLSX}).",
+                )
+                failed_count += 1
+                elsevier_blocked = True
+                print("Elsevier IP-blocked automated access — skipping the rest of this run's Elsevier papers")
             elif blocked_reason:
                 mark_manual_check(
                     row,
