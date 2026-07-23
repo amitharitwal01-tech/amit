@@ -66,6 +66,27 @@ def build_doi_proxy_url(doi, suffix):
     return f"https://doi-org{suffix}/{doi}"
 
 
+# RSC DOI suffixes embed the journal code right after the "<letter><digit>"
+# prefix — e.g. "d5ee07159c" -> "ee" (Energy & Environmental Science),
+# "d5ta01234a" -> "ta" (J. Mater. Chem. A). RSC's on-page "PDF" button
+# points at /en/content/articlepdf/<publication-year>/<code>/<full-suffix>.
+RSC_DOI_SUFFIX_CODE = re.compile(r"^[a-z]\d([a-z]{2,4})\d", re.IGNORECASE)
+
+
+def build_rsc_pdf_url(doi, year, suffix):
+    if not suffix or not doi or not doi.startswith("10.1039/"):
+        return None
+    doi_suffix = doi.split("/", 1)[1]
+    code_match = RSC_DOI_SUFFIX_CODE.match(doi_suffix)
+    year = str(year or "").strip()
+    if not code_match or not year.isdigit():
+        return None
+    return apply_hostname_mangling_proxy(
+        f"https://pubs.rsc.org/en/content/articlepdf/{year}/{code_match.group(1).lower()}/{doi_suffix}",
+        suffix,
+    )
+
+
 # Used only when Stage 1 couldn't resolve the actual hosting domain for a
 # DOI (network hiccup, etc.). CrossRef DOI prefixes are registered per
 # publisher, so the prefix alone is a reasonable guess — but it can't know
@@ -418,6 +439,18 @@ def build_candidate_urls(row, config):
                 f"https://www.sciencedirect.com/science/article/pii/{pii_match.group(1)}",
                 suffix,
             ))
+
+        # RSC (10.1039, e.g. Energy & Environmental Science): the article
+        # page's "PDF" button links to
+        # /en/content/articlepdf/<year>/<code>/<doi-suffix>, which 302s to
+        # a signed silverchair-cdn.com URL. Both parts are derivable — the
+        # journal code is embedded in the DOI suffix ("d5ee07159c" -> "ee")
+        # and the year comes from the tracking sheet — so we can build that
+        # exact link directly (and still fall back to finding the on-page
+        # PDF link if the constructed one misses).
+        rsc_url = build_rsc_pdf_url(doi, row.get("Year", ""), suffix)
+        if rsc_url:
+            candidates.append(rsc_url)
 
         publisher_host = urlparse(publisher_url).netloc
         known_url = build_proxy_pdf_url(doi, publisher_host, suffix)
