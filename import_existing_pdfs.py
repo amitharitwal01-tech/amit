@@ -45,6 +45,7 @@ from doi_resolver import (
     fetch_crossref_metadata,
     load_config,
     load_tracking,
+    next_entry_number,
     normalize_doi,
     resolve_doi_via_crossref,
     resolve_publisher_url,
@@ -109,11 +110,6 @@ def title_from_filename(pdf_path):
 
 def existing_dois(tracking):
     return {normalize_doi(row.get("DOI", "")) for row in tracking.values() if row.get("DOI")}
-
-
-def next_entry_number(tracking):
-    numbers = [int(row["Entry"]) for row in tracking.values() if str(row.get("Entry", "")).isdigit()]
-    return (max(numbers) + 1) if numbers else 1
 
 
 def import_one_pdf(pdf_path, session, email, timeout, known_dois):

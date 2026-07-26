@@ -165,6 +165,18 @@ def load_tracking(tracking_path):
     return rows
 
 
+def next_entry_number(tracking):
+    # A brand-new paper's Entry number must be assigned once, globally
+    # unique, and never reused for anything else — the highest Entry
+    # already in the tracking sheet, plus one. It must NEVER be based on
+    # a paper's row position in whatever Excel file happens to be the
+    # input this run: that position shifts every time publication_data/
+    # gains a file or a file's rows get reordered, which is what caused
+    # already-numbered papers to collide with each other.
+    numbers = [int(row["Entry"]) for row in tracking.values() if str(row.get("Entry", "")).isdigit()]
+    return (max(numbers) + 1) if numbers else 1
+
+
 def save_tracking(tracking_path, rows):
     # utf-8-sig: without the BOM, Excel guesses a legacy encoding when
     # opening the CSV and renders "‐" as "â€" etc. — confirmed on a
@@ -425,7 +437,13 @@ def enrich_record(record, entry_number, session, timeout, downloads_dir):
     # pipeline (only blanks are filled), and move its saved PDF onto the
     # <entry>_<year>_<title> naming scheme — so re-running Stage 1
     # upgrades the existing library in place without re-downloading.
-    record["Entry"] = str(entry_number)
+    #
+    # An already-tracked paper's Entry number must never change here: it
+    # was assigned once, globally, when the paper was first tracked.
+    # entry_number is only ever used as a fallback for the rare row that
+    # somehow has no Entry at all yet (e.g. a tracking sheet edited by
+    # hand) — an existing value always wins.
+    record["Entry"] = str(record.get("Entry") or entry_number)
     doi = record.get("DOI", "")
 
     # A Key_Info without a contribution marker is either missing or the
@@ -565,6 +583,9 @@ def main():
     session.headers.update({"User-Agent": f"paper-pipeline (mailto:{email})"})
 
     tracking = load_tracking(tracking_path)
+    # Assigned once per NEW paper, globally unique, never reused — never
+    # a row's position in this run's input file (see next_entry_number).
+    entry_counter = next_entry_number(tracking)
 
     downloaded_count = 0
     needs_proxy_count = 0
@@ -615,7 +636,14 @@ def main():
                 # wrong document, so that paper goes through again.
                 if same_doi and status in ("downloaded", "downloaded_via_proxy"):
                     print(f"[{i + 1}/{total}{eta}] {title[:70]!r} — already downloaded, updating info columns")
-                    enrich_record(tracked, i + 1, session, timeout, downloads_dir)
+                    if not tracked.get("Entry"):
+                        # Only a hand-edited sheet with a genuinely blank
+                        # Entry hits this — enrich_record keeps any
+                        # existing value and ignores this otherwise.
+                        entry_fallback, entry_counter = entry_counter, entry_counter + 1
+                    else:
+                        entry_fallback = tracked.get("Entry")
+                    enrich_record(tracked, entry_fallback, session, timeout, downloads_dir)
                     downloaded_count += 1
                     continue
                 # Fast resume for a batch run that stopped partway:
@@ -643,11 +671,12 @@ def main():
 
             record = {field: "" for field in TRACKING_FIELDS}
             record.update({
-                "Entry": str(i + 1),
+                "Entry": str(entry_counter),
                 "Title": title,
                 "Authors": authors,
                 "Last_Updated": datetime.now(timezone.utc).isoformat(),
             })
+            entry_counter += 1
 
             # One paper must never kill a batch run: whatever goes wrong
             # here is recorded on the row (status "error" retries on the
