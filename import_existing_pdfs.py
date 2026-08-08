@@ -138,6 +138,7 @@ def import_one_pdf(pdf_path, session, email, timeout, known_dois):
         "Title": title or "(title not resolved — please check manually)",
         "DOI": doi or "",
         "Year": meta.get("year", ""),
+        "Journal": meta.get("journal", ""),
         "Last_Updated": datetime.now(timezone.utc).isoformat(),
     })
     if meta.get("authors"):

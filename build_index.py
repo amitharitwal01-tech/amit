@@ -24,6 +24,13 @@ Usage:
     python build_index.py --find-figure "..."    # figures whose captions match
     python build_index.py --match-figure img.png # figures that LOOK like yours
 
+Every search mode accepts library filters, combinable freely:
+    --journal "nature energy,joule"   only papers from matching journals
+    --years 2020,2023-2025            only those publication years
+    --since 2023 / --until 2024       an open-ended year range
+    --category solar-cell,LED         only those categories
+    --entries 12,45,100-110           only those Entry numbers
+
 Everything runs locally on CPU; nothing is uploaded anywhere. Search
 modes return the papers' own verbatim text, so what they show is
 exactly what's in your library.
@@ -126,6 +133,11 @@ def open_db():
     for column, sql_type in migrations.items():
         if column not in columns:
             db.execute(f"ALTER TABLE chunks ADD COLUMN {column} {sql_type}")
+    # Journal name per paper (filled from the tracking sheet; no rebuild
+    # needed — every run re-syncs it from the sheet).
+    paper_columns = [r[1] for r in db.execute("PRAGMA table_info(papers)")]
+    if "journal" not in paper_columns:
+        db.execute("ALTER TABLE papers ADD COLUMN journal TEXT DEFAULT ''")
     db.execute("CREATE INDEX IF NOT EXISTS chunks_section ON chunks(section)")
     db.execute("CREATE INDEX IF NOT EXISTS chunks_order ON chunks(doi, chunk_index)")
     db.commit()
@@ -517,11 +529,12 @@ def index_paper(db, embedder, image_embedder, row):
 
     db.execute(
         """INSERT OR REPLACE INTO papers
-           (doi, entry, title, year, category, pdf_path, mtime, chunk_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (doi, entry, title, year, journal, category, pdf_path, mtime, chunk_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             key, row.get("Entry", ""), row.get("Title", ""), row.get("Year", ""),
-            row.get("Category", ""), pdf_path, os.path.getmtime(pdf_path), len(scientific_chunks),
+            row.get("Journal", ""), row.get("Category", ""), pdf_path,
+            os.path.getmtime(pdf_path), len(scientific_chunks),
         ),
     )
     db.commit()
@@ -551,6 +564,35 @@ def papers_to_index(db, tracking, rebuild=False):
     return todo
 
 
+def sync_paper_metadata(db, tracking):
+    """Refresh entry/title/year/journal/category on already-indexed
+    papers from the tracking sheet — so metadata added or corrected
+    later (e.g. journal names backfilled by Stage 1) reaches the index
+    on the next run without re-extracting a single PDF."""
+    updated = 0
+    for row in tracking.values():
+        if row.get("Status") not in INDEXED_STATUSES:
+            continue
+        key = row.get("DOI", "") or row.get("PDF_Path", "")
+        if not key:
+            continue
+        cursor = db.execute(
+            """UPDATE papers SET entry = ?, title = ?, year = ?, journal = ?, category = ?
+               WHERE doi = ? AND (entry != ? OR title != ? OR year != ?
+                                  OR COALESCE(journal, '') != ? OR category != ?)""",
+            (
+                row.get("Entry", ""), row.get("Title", ""), row.get("Year", ""),
+                row.get("Journal", ""), row.get("Category", ""), key,
+                row.get("Entry", ""), row.get("Title", ""), row.get("Year", ""),
+                row.get("Journal", ""), row.get("Category", ""),
+            ),
+        )
+        updated += cursor.rowcount
+    if updated:
+        db.commit()
+        print(f"Refreshed metadata (entry/title/year/journal/category) on {updated} indexed paper(s).")
+
+
 def run_indexing(rebuild=False):
     config = load_config()
     tracking = load_tracking(config["paths"]["tracking_csv"])
@@ -563,22 +605,28 @@ def run_indexing(rebuild=False):
         db.execute("DELETE FROM papers")
         db.commit()
 
+    sync_paper_metadata(db, tracking)
     todo = papers_to_index(db, tracking, rebuild)
     already = db.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
     if not todo:
         print(f"Index is up to date ({already} paper(s) indexed). Nothing to do.")
         return
 
-    print(f"{len(todo)} paper(s) to index ({already} already done).")
-    print("Loading the embedding models (first run downloads them once)...")
+    total = len(todo)
+    print(f"{total} paper(s) to index ({already} already done).")
+    print("Loading the embedding models (first run downloads them once — that can take a few minutes)...")
     embedder = get_embedder()
     image_embedder = get_image_embedder()
+    print("Models loaded — indexing begins now.")
 
     total_chunks = 0
     total_figures = 0
     for i, row in enumerate(todo, 1):
         title = row.get("Title", "")[:70]
-        print(f"[{i}/{len(todo)}] {title!r}", end=" ... ", flush=True)
+        # "[i/total]" at the start of the line doubles as the machine-
+        # readable progress marker the app turns into its % bar.
+        percent = (i - 1) * 100 // total
+        print(f"[{i}/{total}] {percent}% {title!r}", end=" ... ", flush=True)
         try:
             count, figure_count, problem = index_paper(db, embedder, image_embedder, row)
         except Exception as e:
@@ -593,10 +641,155 @@ def run_indexing(rebuild=False):
 
     indexed = db.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
     print()
-    print(f"Done. {indexed} paper(s) in the index, {total_chunks} new passages and {total_figures} figures added.")
+    print(f"100% — done. {indexed} paper(s) in the index, {total_chunks} new passages and {total_figures} figures added.")
     print("Try:  python build_index.py --search \"your question\"")
     print("      python build_index.py --find-figure \"what the figure shows\"")
     print("      python build_index.py --match-figure path\\to\\your_image.png")
+
+
+# ---------------------------------------------------------------------------
+# Library filters — one shared implementation for every retrieval front end
+# (the search modes here, ask_library.py, export_for_claude.py): narrow
+# retrieval to papers by journal, year(s), category, or entry numbers.
+# ---------------------------------------------------------------------------
+
+def parse_number_spec(spec):
+    # "2024" -> {2024};  "2020,2023-2025" -> {2020, 2023, 2024, 2025}.
+    # Used for both year specs and Entry-number specs.
+    numbers = set()
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            numbers.update(range(int(start), int(end) + 1))
+        else:
+            numbers.add(int(part))
+    return numbers
+
+
+def add_filter_args(parser):
+    group = parser.add_argument_group("library filters (all optional, combine freely)")
+    group.add_argument("--journal", help="only papers whose journal name contains this text; "
+                       "comma-separate alternatives (e.g. \"nature energy,joule\")")
+    group.add_argument("--category", help="one or more categories, comma-separated (e.g. solar-cell,LED)")
+    group.add_argument("--years", help="specific year(s): 2024, or 2020,2023-2025 (mix of years and ranges)")
+    group.add_argument("--since", type=int, help="only papers from this year onward")
+    group.add_argument("--until", type=int, help="only papers up to this year")
+    group.add_argument("--entries", help="only these Entry numbers: 12,45,100-110")
+
+
+def filters_from_args(args):
+    filters = {}
+    if getattr(args, "journal", None):
+        filters["journals"] = [j.strip() for j in args.journal.split(",") if j.strip()]
+    if getattr(args, "category", None):
+        filters["categories"] = {c.strip().lower() for c in args.category.split(",") if c.strip()}
+    if getattr(args, "years", None):
+        filters["years"] = parse_number_spec(args.years)
+    if getattr(args, "since", None):
+        filters["since"] = args.since
+    if getattr(args, "until", None):
+        filters["until"] = args.until
+    if getattr(args, "entries", None):
+        filters["entries"] = parse_number_spec(args.entries)
+    return filters or None
+
+
+def _compact_ranges(numbers):
+    parts = []
+    start = prev = None
+    for n in numbers:
+        if start is None:
+            start = prev = n
+        elif n == prev + 1:
+            prev = n
+        else:
+            parts.append(f"{start}-{prev}" if prev > start else str(start))
+            start = prev = n
+    if start is not None:
+        parts.append(f"{start}-{prev}" if prev > start else str(start))
+    return ", ".join(parts)
+
+
+def describe_filters(filters):
+    if not filters:
+        return ""
+    bits = []
+    if filters.get("journals"):
+        bits.append("journal contains " + " or ".join(f"'{j}'" for j in filters["journals"]))
+    if filters.get("categories"):
+        bits.append("category " + "/".join(sorted(filters["categories"])))
+    if filters.get("years"):
+        bits.append("year(s) " + _compact_ranges(sorted(filters["years"])))
+    if filters.get("since"):
+        bits.append(f"from {filters['since']}")
+    if filters.get("until"):
+        bits.append(f"up to {filters['until']}")
+    if filters.get("entries"):
+        bits.append("entries " + _compact_ranges(sorted(filters["entries"])))
+    return "; ".join(bits)
+
+
+def paper_filter_sql(filters, alias="p"):
+    """Translate a filters dict into an (SQL fragment, params) pair to
+    append to a query that joins the papers table as `alias`. Year and
+    entry comparisons CAST the stored text, so papers without a usable
+    year are excluded by year filters — the same behavior
+    export_catalog.py's filters have always had."""
+    if not filters:
+        return "", []
+    clauses, params = [], []
+    journals = filters.get("journals")
+    if journals:
+        clauses.append("(" + " OR ".join(
+            f"LOWER(COALESCE({alias}.journal, '')) LIKE ?" for _ in journals) + ")")
+        params.extend(f"%{j.lower()}%" for j in journals)
+    categories = filters.get("categories")
+    if categories:
+        placeholders = ", ".join("?" for _ in categories)
+        clauses.append(f"LOWER({alias}.category) IN ({placeholders})")
+        params.extend(sorted(categories))
+    years = filters.get("years")
+    if years:
+        placeholders = ", ".join("?" for _ in years)
+        clauses.append(f"CAST({alias}.year AS INTEGER) IN ({placeholders})")
+        params.extend(sorted(years))
+    if filters.get("since"):
+        clauses.append(f"CAST({alias}.year AS INTEGER) >= ?")
+        params.append(filters["since"])
+    if filters.get("until"):
+        # BETWEEN 1 AND x, not just <= x: an unknown year CASTs to 0 and
+        # must not slip through an upper-bound-only filter.
+        clauses.append(f"CAST({alias}.year AS INTEGER) BETWEEN 1 AND ?")
+        params.append(filters["until"])
+    entries = filters.get("entries")
+    if entries:
+        placeholders = ", ".join("?" for _ in entries)
+        clauses.append(f"CAST({alias}.entry AS INTEGER) IN ({placeholders})")
+        params.extend(sorted(entries))
+    if not clauses:
+        return "", []
+    return " AND " + " AND ".join(clauses), params
+
+
+def explain_no_matches(db, filters):
+    """A helpful message for zero results under filters — including the
+    one trap worth calling out: journal filtering before any journal
+    names have been fetched into the library."""
+    message = f"No indexed papers match the filters ({describe_filters(filters)})."
+    if filters and filters.get("journals"):
+        with_journal = db.execute(
+            "SELECT COUNT(*) FROM papers WHERE COALESCE(journal, '') != ''"
+        ).fetchone()[0]
+        if with_journal == 0:
+            message += (
+                "\nNote: no paper in the index has a journal name yet. Run "
+                "python doi_resolver.py once (it now fetches journal names), "
+                "then python build_index.py to refresh the index metadata."
+            )
+    return message
 
 
 def _query_terms(query):
@@ -616,7 +809,7 @@ def _exact_term_score(query, text, title):
 
 
 def _expand_with_neighbours(db, row):
-    text, page, page_end, embedding, kind, section, chunk_index, entry, title, year, category, doi = row
+    text, page, page_end, embedding, kind, section, chunk_index, entry, title, year, category, doi, journal = row
     if kind != "text" or chunk_index is None or NEIGHBOUR_CHUNKS <= 0:
         return text
     neighbours = db.execute(
@@ -635,31 +828,37 @@ def _expand_with_neighbours(db, row):
     return "\n\n".join(blocks)
 
 
-def retrieve(db, embedder, query, top_k=5, kind=None):
+def retrieve(db, embedder, query, top_k=5, kind=None, filters=None):
     """Section-aware hybrid retrieval, compatible with existing callers.
 
     Existing dictionary keys are preserved. Additional keys expose section,
-    page range, chunk order, semantic score and lexical score.
+    page range, chunk order, semantic score, lexical score and journal.
+    `filters` (see paper_filter_sql) narrows retrieval to matching papers.
     """
     if kind == "figure":
-        kind_filter = "WHERE c.kind = 'figure'"
+        kind_clause = "c.kind = 'figure'"
     else:
-        kind_filter = "WHERE c.kind IN ('text', 'figure', 'table')"
+        kind_clause = "c.kind IN ('text', 'figure', 'table')"
+    filter_clause, filter_params = paper_filter_sql(filters)
     rows = db.execute(
         f"""SELECT c.text, c.page, COALESCE(c.page_end, c.page), c.embedding,
                    c.kind, COALESCE(c.section, 'unknown'), c.chunk_index,
-                   p.entry, p.title, p.year, p.category, p.doi
-            FROM chunks c JOIN papers p ON p.doi = c.doi {kind_filter}
-            WHERE c.embedding IS NOT NULL"""
-        if not kind_filter else
-        f"""SELECT c.text, c.page, COALESCE(c.page_end, c.page), c.embedding,
-                   c.kind, COALESCE(c.section, 'unknown'), c.chunk_index,
-                   p.entry, p.title, p.year, p.category, p.doi
-            FROM chunks c JOIN papers p ON p.doi = c.doi {kind_filter}
-              AND c.embedding IS NOT NULL"""
+                   p.entry, p.title, p.year, p.category, p.doi,
+                   COALESCE(p.journal, '')
+            FROM chunks c JOIN papers p ON p.doi = c.doi
+            WHERE {kind_clause} AND c.embedding IS NOT NULL{filter_clause}""",
+        filter_params,
     ).fetchall()
     if not rows:
         return []
+
+    # With filters the paper pool can be tiny (a single journal, a
+    # handful of entries) — the usual 2-per-paper diversity cap would
+    # then starve top_k. Let the cap grow so top_k stays reachable.
+    max_per_paper = MAX_RESULTS_PER_PAPER
+    if filters:
+        paper_pool = len({row[11] for row in rows})
+        max_per_paper = max(MAX_RESULTS_PER_PAPER, -(-top_k // max(paper_pool, 1)))
 
     query_vector = np.array(list(embedder.query_embed(query)), dtype=np.float32)[0]
     norm = np.linalg.norm(query_vector)
@@ -685,7 +884,7 @@ def retrieve(db, embedder, query, top_k=5, kind=None):
     for combined, semantic, lexical, index in scored[:candidate_limit]:
         row = rows[index]
         doi = row[11]
-        if per_paper.get(doi, 0) >= MAX_RESULTS_PER_PAPER:
+        if per_paper.get(doi, 0) >= max_per_paper:
             continue
         per_paper[doi] = per_paper.get(doi, 0) + 1
         selected.append((combined, semantic, lexical, row))
@@ -694,7 +893,7 @@ def retrieve(db, embedder, query, top_k=5, kind=None):
 
     results = []
     for combined, semantic, lexical, row in selected:
-        text, page, page_end, _embedding, kind_value, section, chunk_index, entry, title, year, category, doi = row
+        text, page, page_end, _embedding, kind_value, section, chunk_index, entry, title, year, category, doi, journal = row
         results.append({
             "text": _expand_with_neighbours(db, row),
             "matched_text": text,
@@ -703,6 +902,7 @@ def retrieve(db, embedder, query, top_k=5, kind=None):
             "entry": entry,
             "title": title,
             "year": year,
+            "journal": journal,
             "category": category,
             "doi": doi,
             "kind": kind_value,
@@ -715,27 +915,33 @@ def retrieve(db, embedder, query, top_k=5, kind=None):
     return results
 
 
-def run_search(query, top_k=5, kind=None):
+def run_search(query, top_k=5, kind=None, filters=None):
     db = open_db()
     embedder = get_embedder()
-    results = retrieve(db, embedder, query, top_k, kind)
+    results = retrieve(db, embedder, query, top_k, kind, filters)
     if not results:
+        if filters:
+            sys.exit(explain_no_matches(db, filters))
         sys.exit(
             "No matching index entries — run  python build_index.py  first."
             if kind is None else
             "No figure captions in the index yet — run  python build_index.py  first."
         )
 
-    print(f"Top {len(results)} passages for: {query!r}")
+    header = f"Top {len(results)} passages for: {query!r}"
+    if filters:
+        header += f"  [filters: {describe_filters(filters)}]"
+    print(header)
     for rank, r in enumerate(results, 1):
         print()
         pages = f"p.{r['page']}" if r['page_end'] == r['page'] else f"pp.{r['page']}-{r['page_end']}"
         section = r.get("section", "unknown").replace("_", " ").title()
-        print(f"--- {rank}. [Entry {r['entry']} | {r['year']} | {r['category']} | {section}] {r['title'][:80]}  ({pages}, score {r['score']:.2f})")
+        meta = " | ".join(bit for bit in (r['year'], r.get('journal', ''), r['category'], section) if bit)
+        print(f"--- {rank}. [Entry {r['entry']} | {meta}] {r['title'][:80]}  ({pages}, score {r['score']:.2f})")
         print(r["text"])
 
 
-def run_match_figure(image_path, top_k=5):
+def run_match_figure(image_path, top_k=5, filters=None):
     # "Here is a figure — what in my library looks like this?" The
     # given image and every stored figure share the same visual-
     # fingerprint space, so nearest neighbours are visually similar
@@ -743,12 +949,16 @@ def run_match_figure(image_path, top_k=5):
     if not os.path.exists(image_path):
         sys.exit(f"Image not found: {image_path}")
     db = open_db()
+    filter_clause, filter_params = paper_filter_sql(filters)
     rows = db.execute(
-        """SELECT f.caption, f.page, f.image_path, f.clip, p.entry, p.title, p.year
-           FROM figures f JOIN papers p ON p.doi = f.doi
-           WHERE f.clip IS NOT NULL"""
+        f"""SELECT f.caption, f.page, f.image_path, f.clip, p.entry, p.title, p.year
+            FROM figures f JOIN papers p ON p.doi = f.doi
+            WHERE f.clip IS NOT NULL{filter_clause}""",
+        filter_params,
     ).fetchall()
     if not rows:
+        if filters:
+            sys.exit(explain_no_matches(db, filters))
         sys.exit(
             "No figures with visual fingerprints in the index yet — run "
             "python build_index.py (with the image model able to load) first."
@@ -788,15 +998,20 @@ def main():
     parser.add_argument("--find-figure", metavar="QUERY", nargs="+", help="find figures by describing what they show")
     parser.add_argument("--match-figure", metavar="IMAGE", help="find stored figures visually similar to an image file")
     parser.add_argument("--top", type=int, default=5, help="how many results the search modes show")
+    add_filter_args(parser)
     args = parser.parse_args()
+    filters = filters_from_args(args)
 
     if args.search:
-        run_search(" ".join(args.search), args.top)
+        run_search(" ".join(args.search), args.top, filters=filters)
     elif args.find_figure:
-        run_search(" ".join(args.find_figure), args.top, kind="figure")
+        run_search(" ".join(args.find_figure), args.top, kind="figure", filters=filters)
     elif args.match_figure:
-        run_match_figure(args.match_figure, args.top)
+        run_match_figure(args.match_figure, args.top, filters=filters)
     else:
+        if filters:
+            parser.error("--journal/--category/--years/--since/--until/--entries only "
+                         "apply to the search modes (--search, --find-figure, --match-figure)")
         run_indexing(args.rebuild)
 
 

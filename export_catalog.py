@@ -15,6 +15,8 @@ Usage:
     python export_catalog.py --years 2024             # exactly one year
     python export_catalog.py --years 2020,2023-2025   # any mix of years/ranges
     python export_catalog.py --category solar-cell,LED  # several categories
+    python export_catalog.py --journal "nature energy,joule"  # journal name contains
+    python export_catalog.py --entries 12,45,100-110  # specific Entry numbers
     python export_catalog.py --status downloaded      # only papers with PDFs
 
 Filter to the topic of the chapter you're planning — a focused catalog
@@ -28,24 +30,9 @@ from collections import Counter
 from datetime import datetime
 
 from doi_resolver import load_config, load_tracking, resolve_output_path
-from build_index import DB_PATH
+from build_index import DB_PATH, parse_number_spec
 
 DOWNLOADED_STATUSES = ("downloaded", "downloaded_via_proxy")
-
-
-def parse_years(spec):
-    # "2024" -> {2024};  "2020,2023-2025" -> {2020, 2023, 2024, 2025}
-    years = set()
-    for part in spec.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "-" in part:
-            start, end = part.split("-", 1)
-            years.update(range(int(start), int(end) + 1))
-        else:
-            years.add(int(part))
-    return years
 
 
 def load_captions_by_doi():
@@ -72,9 +59,12 @@ def main():
     parser = argparse.ArgumentParser(description="Export a library catalog for Claude.")
     parser.add_argument("--full", action="store_true", help="include abstracts and figure/table captions")
     parser.add_argument("--category", help="one or more categories, comma-separated (e.g. solar-cell,LED)")
+    parser.add_argument("--journal", help="only papers whose journal name contains this text; "
+                        "comma-separate alternatives (e.g. \"nature energy,joule\")")
     parser.add_argument("--since", type=int, help="only papers from this year onward")
     parser.add_argument("--until", type=int, help="only papers up to this year")
     parser.add_argument("--years", help="specific year(s): 2024, or 2020,2023-2025 (mix of years and ranges)")
+    parser.add_argument("--entries", help="only these Entry numbers: 12,45,100-110")
     parser.add_argument("--status", help="only rows with this status (e.g. downloaded)")
     parser.add_argument("--out", help="output file or folder "
                         "(default: catalogs/catalog_<timestamp>.md; a folder keeps the default name inside it)")
@@ -97,18 +87,33 @@ def main():
             wanted = {c.strip().lower() for c in args.category.split(",") if c.strip()}
             if (row.get("Category", "") or "").lower() not in wanted:
                 continue
+        if args.journal:
+            journal = (row.get("Journal", "") or "").lower()
+            wanted_journals = [j.strip().lower() for j in args.journal.split(",") if j.strip()]
+            if not any(j in journal for j in wanted_journals):
+                continue
         year = row.get("Year", "")
         if args.since and (not year.isdigit() or int(year) < args.since):
             continue
         if args.until and (not year.isdigit() or int(year) > args.until):
             continue
         if args.years:
-            if not year.isdigit() or int(year) not in parse_years(args.years):
+            if not year.isdigit() or int(year) not in parse_number_spec(args.years):
+                continue
+        if args.entries:
+            entry = str(row.get("Entry", "") or "")
+            if not entry.isdigit() or int(entry) not in parse_number_spec(args.entries):
                 continue
         rows.append(row)
 
     if not rows:
-        sys.exit("No papers match those filters.")
+        message = "No papers match those filters."
+        if args.journal and not any((r.get("Journal") or "").strip() for r in tracking.values()):
+            message += (
+                "\nNote: the tracking sheet has no journal names yet — run "
+                "python doi_resolver.py once to fetch them from CrossRef."
+            )
+        sys.exit(message)
     rows.sort(key=lambda r: int(r["Entry"]) if str(r.get("Entry", "")).isdigit() else 0)
 
     captions_by_doi = load_captions_by_doi() if args.full else {}
@@ -133,7 +138,7 @@ def main():
 
     for r in rows:
         header = f"## [Entry {r.get('Entry', '?')}] {r.get('Title', '').strip()}"
-        meta_bits = [b for b in (r.get("Year", ""), r.get("Category", ""), r.get("DOI", "")) if b]
+        meta_bits = [b for b in (r.get("Year", ""), r.get("Journal", ""), r.get("Category", ""), r.get("DOI", "")) if b]
         lines += [header, "", f"*{' | '.join(meta_bits)}*", ""]
         authors = (r.get("Authors") or "").strip()
         if authors:

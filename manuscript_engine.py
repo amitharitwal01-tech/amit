@@ -12,14 +12,21 @@ this list:
     download_papers.py      no CLI args (runs the two above in sequence)
     import_existing_pdfs.py --folder PATH --yes   (interactive if omitted)
     build_index.py          --rebuild | --search Q... | --find-figure Q...
-                             | --match-figure IMG  [--top N]
+                             | --match-figure IMG  [--top N] [+ filters]
     ask_library.py          [question...] [--file F] [--top N] [--no-ai]
-                             [--pack] [--out FILE|DIR]   (default answers/)
-    export_catalog.py       [--full] [--category C] [--since Y] [--until Y]
-                             [--years SPEC] [--status S] [--out FILE|DIR]
-                             (default catalogs/)
-    export_for_claude.py    OUTLINE [--per-section N] [--style FILE]
-                             [--out FILE|DIR]   (default research_packs/)
+                             [--pack] [--out FILE|DIR] [+ filters]
+                             (default answers/)
+    export_catalog.py       [--full] [--category C] [--journal J] [--since Y]
+                             [--until Y] [--years SPEC] [--entries SPEC]
+                             [--status S] [--out FILE|DIR]  (default catalogs/)
+    export_for_claude.py    OUTLINE(.txt/.md/.docx) [--per-section N]
+                             [--style FILE] [--out FILE|DIR] [+ filters]
+                             (default research_packs/)
+
+    "[+ filters]" = the shared library filters, accepted identically by
+    build_index.py search modes, ask_library.py and export_for_claude.py:
+    [--journal J] [--category C] [--years SPEC] [--since Y] [--until Y]
+    [--entries SPEC]
     extract_cited_references.py   MANUSCRIPT [--out DIR]
     extract_cited_figures.py      MANUSCRIPT [--out DIR]
     export_citation_library.py    MANUSCRIPT [--out PREFIX]
@@ -98,6 +105,13 @@ STDIN_WAIT_MARKERS = (
     "press Enter to continue",
     "tap it now",
 )
+
+# "[12/345] ..." at the start of an output line is the pipeline scripts'
+# progress marker (build_index.py per paper, doi_resolver.py per row,
+# ask_library.py per sub-question, export_for_claude.py per section).
+# The panel turns it into a real percentage bar instead of the endless
+# "busy" animation, so it's obvious the run is alive and how far along.
+PROGRESS_MARKER = re.compile(r"^\[(\d+)\s*/\s*(\d+)\b")
 
 
 # ===========================================================================
@@ -487,7 +501,8 @@ class ProcessPanel(QWidget):
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.progress.setVisible(True)
-        self.progress.setRange(0, 0)
+        self.progress.setRange(0, 0)  # indeterminate until the script reports [i/N] progress
+        self.progress.resetFormat()
         self.process.start()
         return True
 
@@ -506,8 +521,22 @@ class ProcessPanel(QWidget):
             self._append(line.rstrip(), level)
             if len(line) < 160:
                 self.state_label.setText(line.strip())
+            self._update_progress(line.strip())
             if any(marker in line for marker in STDIN_WAIT_MARKERS):
                 self.continue_btn.setVisible(True)
+
+    def _update_progress(self, line: str):
+        match = PROGRESS_MARKER.match(line)
+        if not match:
+            return
+        current, total = int(match.group(1)), int(match.group(2))
+        if total <= 0 or current > total:
+            return
+        # Item i being *started* means i-1 of total are done; 100% is
+        # reached only when the run actually finishes.
+        self.progress.setRange(0, 100)
+        self.progress.setValue((current - 1) * 100 // total)
+        self.progress.setFormat(f"%p%  ({current} of {total})")
 
     def _send_continue(self):
         if self.process:
@@ -1154,6 +1183,8 @@ class MainWindow(QMainWindow):
 
         self.lookup_top = QSpinBox(); self.lookup_top.setRange(1, 50); self.lookup_top.setValue(5)
         form.addRow("Results to show:", self.lookup_top)
+        lookup_filter_widget, self.lookup_filters = self._make_filter_fields()
+        form.addRow("Limit to papers:", lookup_filter_widget)
         lookup.layout().addLayout(form)
 
         self.lookup_panel = ProcessPanel("Quick Lookup", self.log_console, self.set_status)
@@ -1179,6 +1210,8 @@ class MainWindow(QMainWindow):
         opt_row.addStretch()
         ask.layout().addLayout(opt_row)
         ask_out_form = QFormLayout()
+        ask_filter_widget, self.ask_filters = self._make_filter_fields()
+        ask_out_form.addRow("Limit to papers:", ask_filter_widget)
         self.ask_out = OutputChooser("File name, e.g. tin_stability.md (blank = automatic)")
         ask_out_form.addRow("Save result to:", self.ask_out)
         ask.layout().addLayout(ask_out_form)
@@ -1199,11 +1232,48 @@ class MainWindow(QMainWindow):
         l.addWidget(button)
         return w
 
+    def _make_filter_fields(self) -> tuple[QWidget, dict]:
+        """A compact 'limit to papers' block (journal / years / category /
+        entry numbers, all optional) shared by the Ask and Research-pack
+        cards. Blank fields mean no restriction — exactly the old behavior."""
+        fields = {
+            "journal": QLineEdit(), "years": QLineEdit(),
+            "category": QLineEdit(), "entries": QLineEdit(),
+        }
+        fields["journal"].setPlaceholderText("Journal contains... e.g. nature energy,joule")
+        fields["years"].setPlaceholderText("Years, e.g. 2020,2023-2025")
+        fields["category"].setPlaceholderText("Category, e.g. solar-cell,LED")
+        fields["entries"].setPlaceholderText("Entry numbers, e.g. 12,45,100-110")
+        for edit in fields.values():
+            edit.setClearButtonEnabled(True)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+        grid.addWidget(fields["journal"], 0, 0)
+        grid.addWidget(fields["years"], 0, 1)
+        grid.addWidget(fields["category"], 1, 0)
+        grid.addWidget(fields["entries"], 1, 1)
+        w = QWidget()
+        w.setLayout(grid)
+        return w, fields
+
+    @staticmethod
+    def _filter_args(fields: dict) -> list[str]:
+        args = []
+        for key, flag in (("journal", "--journal"), ("years", "--years"),
+                          ("category", "--category"), ("entries", "--entries")):
+            value = fields[key].text().strip()
+            if value:
+                args += [flag, value]
+        return args
+
     def _run_lookup(self, extra: list[str]):
         if len(extra) >= 2 and not str(extra[1]).strip():
             QMessageBox.warning(self, "Missing value", "Type something to search for first.")
             return
-        self.run_in_panel(self.lookup_panel, "build_index.py", extra + ["--top", str(self.lookup_top.value())])
+        args = extra + ["--top", str(self.lookup_top.value())] + self._filter_args(self.lookup_filters)
+        self.run_in_panel(self.lookup_panel, "build_index.py", args)
 
     def run_ask(self):
         q = self.question_edit.toPlainText().strip()
@@ -1215,8 +1285,11 @@ class MainWindow(QMainWindow):
             args.append("--pack")
         if self.noai_check.isChecked():
             args.append("--no-ai")
+        args += self._filter_args(self.ask_filters)
         args += self.ask_out.out_arg()
-        args.append(q)
+        # "--" ends option parsing, so a question that happens to start
+        # with a dash ("-70C stability?") can't be mistaken for a flag.
+        args += ["--", q]
         self.run_in_panel(self.ask_panel, "ask_library.py", args)
 
     # ---------------- Export & Draft ----------------
@@ -1231,6 +1304,14 @@ class MainWindow(QMainWindow):
         self.cat_category = QLineEdit()
         self.cat_category.setPlaceholderText("e.g. solar-cell,LED (blank = all)")
         form.addRow("Category:", self.cat_category)
+        self.cat_journal = QLineEdit()
+        self.cat_journal.setPlaceholderText("journal name contains, e.g. nature energy,joule (blank = all)")
+        self.cat_journal.setClearButtonEnabled(True)
+        form.addRow("Journal:", self.cat_journal)
+        self.cat_entries = QLineEdit()
+        self.cat_entries.setPlaceholderText("e.g. 12,45,100-110 (blank = all)")
+        self.cat_entries.setClearButtonEnabled(True)
+        form.addRow("Entries:", self.cat_entries)
         yr_row = QHBoxLayout()
         self.cat_since = QSpinBox(); self.cat_since.setRange(0, 2100); self.cat_since.setValue(0)
         self.cat_since.setSpecialValueText("any")
@@ -1252,15 +1333,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(catalog)
 
         draft = Card("Build a research pack for an outline", "Runs export_for_claude.py — retrieves evidence for each "
-                     "section of your outline, ready to upload to Claude for drafting.")
+                     "section of your outline (.txt, .md, or Word .docx), ready to upload to Claude for drafting. "
+                     "The filters restrict which papers the pack may draw from — e.g. only a given journal or year range.")
         oform = QFormLayout()
-        self.outline_picker = PathPicker(is_dir=False, filter_str="Text files (*.txt)")
+        self.outline_picker = PathPicker(is_dir=False, filter_str="Outline files (*.txt *.md *.docx);;All files (*.*)")
         oform.addRow("Outline file:", self.outline_picker)
         self.per_section = QSpinBox(); self.per_section.setRange(0, 500); self.per_section.setValue(20)
         self.per_section.setSpecialValueText("default (15)")
         oform.addRow("Passages per section:", self.per_section)
         self.style_picker = PathPicker(is_dir=False, filter_str="Text files (*.txt)")
         oform.addRow("Style rules file:", self.style_picker)
+        pack_filter_widget, self.pack_filters = self._make_filter_fields()
+        oform.addRow("Limit to papers:", pack_filter_widget)
         self.pack_out = OutputChooser("File name, e.g. pack_section5.md (blank = automatic)")
         oform.addRow("Save to:", self.pack_out)
         draft.layout().addLayout(oform)
@@ -1287,6 +1371,10 @@ class MainWindow(QMainWindow):
             args.append("--full")
         if self.cat_category.text().strip():
             args += ["--category", self.cat_category.text().strip()]
+        if self.cat_journal.text().strip():
+            args += ["--journal", self.cat_journal.text().strip()]
+        if self.cat_entries.text().strip():
+            args += ["--entries", self.cat_entries.text().strip()]
         if self.cat_since.value():
             args += ["--since", str(self.cat_since.value())]
         if self.cat_until.value():
@@ -1304,6 +1392,7 @@ class MainWindow(QMainWindow):
             args += ["--per-section", str(self.per_section.value())]
         if self.style_picker.value():
             args += ["--style", self.style_picker.value()]
+        args += self._filter_args(self.pack_filters)
         args += self.pack_out.out_arg()
         self.run_in_panel(self.draft_panel, "export_for_claude.py", args)
 

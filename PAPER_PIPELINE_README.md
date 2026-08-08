@@ -138,7 +138,15 @@ moves any strays from the workspace root into these folders.
 
 ## Tracking CSV columns
 
-`Title, Authors, DOI, Status, PDF_Path, Source_URL, Publisher_URL, Notes, Last_Updated`
+`Entry, Title, Authors, DOI, Year, Journal, Category, Status, PDF_Path,
+Source_URL, Publisher_URL, Corresponding_Author, Corresponding_Email,
+Institute, Key_Info, Abstract, Notes, Last_Updated`
+
+`Journal` (the journal's name, from CrossRef) is what the `--journal`
+filters in the search/ask/catalog/research-pack tools match against.
+**If you're upgrading from an older run, re-run `python doi_resolver.py`
+once** so journal names get backfilled for existing rows, then
+`python build_index.py` so the search index picks them up.
 
 `Publisher_URL` is the exact article URL (e.g.
 `https://advanced.onlinelibrary.wiley.com/doi/10.1002/adfm.75159`) that

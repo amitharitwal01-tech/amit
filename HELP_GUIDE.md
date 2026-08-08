@@ -211,6 +211,18 @@ searchable.
   python build_index.py --rebuild
   ```
 
+**How to tell it's working:** every paper prints a line like
+`[12/345] 3% 'Title...' ... 18 passages, 6 figures`, and in the app the
+progress bar shows the same percentage and "12 of 345". If nothing has
+printed yet, it's still loading the embedding models — the first ever
+run downloads them once (a few minutes); after that they load from disk
+in seconds. "Index is up to date … Nothing to do." means exactly that:
+everything already downloaded is already indexed.
+
+Each run also refreshes the index's metadata (entry, title, year,
+journal, category) from the tracking sheet — so corrections and newly
+fetched journal names reach search results without re-indexing any PDF.
+
 ---
 
 ## 3. Search & ask your library
@@ -229,6 +241,24 @@ searchable.
   ```
   Add `--top 10` to any of these for more results (default 5).
 
+**Choosing which papers may answer** — both in the app (the "Limit to
+papers" fields on each card) and on the command line, every search and
+ask mode accepts the same optional filters, combinable freely:
+
+| Filter | Example | Means |
+|---|---|---|
+| `--journal` | `--journal "nature energy,joule"` | journal name contains any of these |
+| `--years` | `--years 2020,2023-2025` | exactly these years (mix of years/ranges) |
+| `--since` / `--until` | `--since 2023` | an open-ended year range |
+| `--category` | `--category solar-cell,LED` | only these categories |
+| `--entries` | `--entries 12,45,100-110` | only these Entry numbers |
+
+Journal names come from CrossRef and are stored in the tracking sheet's
+new **Journal** column. For a library built before this column existed,
+run Stage 1 once (`python doi_resolver.py`) — it backfills journal
+names for every already-downloaded paper — then run
+`python build_index.py` so the index picks them up.
+
 ### 3b. Ask a real question
 
 `--pack` is the fast, recommended path on any machine: it doesn't run
@@ -237,10 +267,16 @@ upload to Claude, which writes the actual answer with citations.
 
 - **In the app:** **Search & Ask** → "Ask your library" card — type
   your question (a single question or a whole paragraph), leave
-  "--pack" checked, optionally set "Save to", click **Ask**.
+  "--pack" checked, optionally fill any "Limit to papers" fields
+  (journal / years / category / entries), optionally set "Save to",
+  click **Ask**.
 - **From a terminal:**
   ```
   python ask_library.py "what mechanisms explain Sn(II) oxidation in tin perovskites?" --pack
+  ```
+  To restrict which papers may answer (see the filters table in 3a):
+  ```
+  python ask_library.py "your question" --pack --journal "nature energy" --since 2023
   ```
   To choose where it saves:
   ```
@@ -261,19 +297,22 @@ figure/table captions with `--full`) — upload this to Claude when
 you're designing an outline or checking topic coverage.
 
 - **In the app:** **Export & Draft** → "Export a library catalog" card
-  — set Category/Years/Full as needed → **Export catalog**.
+  — set Category/Journal/Entries/Years/Full as needed → **Export catalog**.
 - **From a terminal:**
   ```
   python export_catalog.py
   python export_catalog.py --full --category solar-cell --since 2023
   python export_catalog.py --years 2020,2023-2025
+  python export_catalog.py --journal "nature energy,joule" --entries 100-200
   ```
   Choose where it saves: `--out my_folder/` or `--out my_catalog.md`.
 
 ### 4b. Write your outline
 
-A plain `.txt` file, sections separated by a line of dashes (`----`).
-See any of your existing `*_Outline*.txt` files as an example.
+A plain `.txt` file, sections separated by a line of dashes (`----`) —
+see any of your existing `*_Outline*.txt` files as an example. A
+Markdown `.md` or Word `.docx` outline works too, and the file's
+encoding doesn't matter (Notepad "ANSI"/"Unicode" files are fine).
 
 ### 4c. Build a research pack for a section (or the whole outline)
 
@@ -282,13 +321,18 @@ Retrieves the evidence passages for every section, embeds your
 drafting.
 
 - **In the app:** **Export & Draft** → "Build a research pack for an
-  outline" card — pick your outline file → **Build research pack**.
+  outline" card — pick your outline file, optionally fill any "Limit
+  to papers" fields (journal / years / category / entries) →
+  **Build research pack**.
 - **From a terminal:**
   ```
   python export_for_claude.py my_outline.txt
   python export_for_claude.py my_outline.txt --per-section 25 --style style_rules.txt
+  python export_for_claude.py my_outline.docx --journal "nature energy,joule" --years 2023-2025
   ```
-  Choose where it saves: `--out my_folder/` or `--out pack_section5.md`.
+  The filters (same table as in 3a) restrict which papers the pack may
+  draw evidence from. Choose where it saves: `--out my_folder/` or
+  `--out pack_section5.md`.
 
 ### 4d. Draft with Claude
 
@@ -413,9 +457,17 @@ python build_index.py --find-figure a description of the figure
 python build_index.py --match-figure my_image.png
 python ask_library.py "your question" --pack
 
+# Library filters — accepted by every search/ask/pack command above and below:
+#   --journal "nature energy,joule"   --years 2020,2023-2025
+#   --since 2023   --until 2024   --category solar-cell,LED
+#   --entries 12,45,100-110
+python ask_library.py "your question" --pack --journal "nature energy" --since 2023
+
 # Plan & draft
 python export_catalog.py --full --category solar-cell --since 2023
+python export_catalog.py --journal joule --years 2024
 python export_for_claude.py my_outline.txt --per-section 20
+python export_for_claude.py my_outline.docx --journal "nature energy" --years 2023-2025
 
 # Finalize
 python extract_cited_references.py my_manuscript.docx

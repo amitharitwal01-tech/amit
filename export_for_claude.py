@@ -11,6 +11,12 @@ library even though the writing happens elsewhere.
 Usage:
     python export_for_claude.py outline.txt
     python export_for_claude.py outline.txt --per-section 15
+    python export_for_claude.py outline.docx --journal "nature energy" --since 2023
+
+The outline can be .txt, .md, or a Word .docx file. Library filters
+(--journal, --years, --since/--until, --category, --entries) restrict
+which papers the pack may draw passages from — see ask_library.py for
+the same flags.
 
 Outline format — plain text, exactly how you'd naturally write it:
     1. Introduction
@@ -24,17 +30,35 @@ Lines starting with a number ("1.", "2)") or "#" begin a new section;
 everything under a heading is that section's specification.
 """
 import argparse
+import html
 import os
 import re
 import sys
 from datetime import datetime
 
-from doi_resolver import load_config, resolve_output_path
+from doi_resolver import load_config, read_text_flexible, resolve_output_path
 from ask_library import split_into_subquestions
 import build_index
 
 SECTION_HEADING = re.compile(r"^(?:\d+[.)]\s+|#+\s+)(.+)$")
 HORIZONTAL_RULE = re.compile(r"^[-–—_=]{5,}$")
+
+
+def read_outline(path):
+    """The outline as plain text — whether it lives in a .txt/.md file
+    (any common encoding) or a Word .docx, since outlines get drafted in
+    Word as often as in Notepad."""
+    if path.lower().endswith(".docx"):
+        # Deliberately dependency-free, same as extract_cited_references:
+        # a .docx is a zip and word/document.xml holds the text; paragraph
+        # ends become newlines so the outline's line structure survives.
+        import zipfile
+        with zipfile.ZipFile(path) as z:
+            xml = z.read("word/document.xml").decode("utf-8", errors="replace")
+        xml = xml.replace("</w:p>", "</w:p>\n")
+        text = re.sub(r"<[^>]+>", "", xml)
+        return html.unescape(text)
+    return read_text_flexible(path)
 
 
 def parse_outline(text):
@@ -70,7 +94,7 @@ def parse_outline(text):
     return [s for s in sections if s["heading"] or s["spec"]]
 
 
-def gather_for_section(db, embedder, section, per_section):
+def gather_for_section(db, embedder, section, per_section, filters=None):
     queries = [section["heading"]]
     if section["spec"]:
         queries.append(section["spec"][:300])
@@ -79,7 +103,7 @@ def gather_for_section(db, embedder, section, per_section):
     passages = []
     seen_texts = set()
     for query in queries:
-        for result in build_index.retrieve(db, embedder, query, top_k=6):
+        for result in build_index.retrieve(db, embedder, query, top_k=6, filters=filters):
             marker = result["text"][:120]
             if marker in seen_texts:
                 continue
@@ -89,27 +113,41 @@ def gather_for_section(db, embedder, section, per_section):
 
     figures = []
     figure_query = section["spec"] or section["heading"]
-    for result in build_index.retrieve(db, embedder, figure_query, top_k=3, kind="figure"):
+    for result in build_index.retrieve(db, embedder, figure_query, top_k=3, kind="figure", filters=filters):
         figures.append(result)
 
     return passages[:per_section], figures
 
 
-def build_pack(outline_text, per_section, style_text=""):
+def build_pack(outline_text, per_section, style_text="", filters=None):
     db = build_index.open_db()
     paper_count = db.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
     if paper_count == 0:
         sys.exit("The library index is empty — run  python build_index.py  first.")
+    if filters:
+        filter_sql, filter_params = build_index.paper_filter_sql(filters)
+        eligible = db.execute(
+            f"SELECT COUNT(*) FROM papers p WHERE 1=1{filter_sql}", filter_params
+        ).fetchone()[0]
+        if eligible == 0:
+            sys.exit(build_index.explain_no_matches(db, filters))
+        print(f"Library filters: {build_index.describe_filters(filters)} — "
+              f"{eligible} of {paper_count} indexed paper(s) eligible.")
     embedder = build_index.get_embedder()
 
     sections = parse_outline(outline_text)
     if not sections:
         sys.exit("Couldn't find any sections in the outline file.")
 
+    filter_note = (
+        f" Passages were restricted to papers matching: {build_index.describe_filters(filters)}."
+        if filters else ""
+    )
     lines = [
         "# Research pack",
         "",
-        f"Generated {datetime.now():%Y-%m-%d %H:%M} from a library of {paper_count} indexed paper(s).",
+        f"Generated {datetime.now():%Y-%m-%d %H:%M} from a library of {paper_count} indexed paper(s)."
+        + filter_note,
         "",
         "## Instructions for the writer",
         "",
@@ -156,9 +194,11 @@ def build_pack(outline_text, per_section, style_text=""):
     ]
 
     used_entries = {}
+    total = len(sections)
     for i, section in enumerate(sections, 1):
-        print(f"[{i}/{len(sections)}] retrieving for {section['heading'][:60]!r} ...")
-        passages, figures = gather_for_section(db, embedder, section, per_section)
+        percent = (i - 1) * 100 // total
+        print(f"[{i}/{total}] {percent}% retrieving for {section['heading'][:60]!r} ...")
+        passages, figures = gather_for_section(db, embedder, section, per_section, filters)
 
         lines += [f"## Section {i}: {section['heading']}", ""]
         if section["spec"]:
@@ -170,8 +210,9 @@ def build_pack(outline_text, per_section, style_text=""):
             lines.append("")
             for r in passages:
                 used_entries[r["entry"]] = r
+                meta = ", ".join(bit for bit in (r["year"], r.get("journal", ""), r["category"]) if bit)
                 lines.append(
-                    f"**[Entry {r['entry']}, p.{r['page']}]** ({r['year']}, {r['category']}) {r['title']}"
+                    f"**[Entry {r['entry']}, p.{r['page']}]** ({meta}) {r['title']}"
                 )
                 lines.append(f"> {r['text']}")
                 lines.append("")
@@ -186,7 +227,7 @@ def build_pack(outline_text, per_section, style_text=""):
     lines += ["## References catalog", ""]
     for entry in sorted(used_entries, key=lambda e: int(e) if str(e).isdigit() else 0):
         r = used_entries[entry]
-        doi_row = build_index.open_db().execute(
+        doi_row = db.execute(
             "SELECT doi FROM papers WHERE entry = ?", (str(entry),)
         ).fetchone()
         doi = doi_row[0] if doi_row else ""
@@ -198,7 +239,7 @@ def build_pack(outline_text, per_section, style_text=""):
 
 def main():
     parser = argparse.ArgumentParser(description="Build a research pack for Claude from your outline.")
-    parser.add_argument("outline", help="path to your outline text file")
+    parser.add_argument("outline", help="path to your outline file (.txt, .md, or .docx)")
     parser.add_argument("--per-section", type=int, default=15,
                         help="max source passages per section (default 15)")
     parser.add_argument("--style", default="style_rules.txt",
@@ -206,17 +247,20 @@ def main():
                              "(default: style_rules.txt if it exists)")
     parser.add_argument("--out", help="output file or folder (default: "
                         "research_packs/research_pack_<timestamp>.md; a folder keeps the default name inside it)")
+    build_index.add_filter_args(parser)
     args = parser.parse_args()
+    filters = build_index.filters_from_args(args)
 
     if not os.path.exists(args.outline):
         sys.exit(f"Outline file not found: {args.outline}")
-    with open(args.outline, "r", encoding="utf-8") as f:
-        outline_text = f.read()
+    try:
+        outline_text = read_outline(args.outline)
+    except Exception as e:
+        sys.exit(f"Could not read the outline file {args.outline}: {type(e).__name__}: {e}")
 
     style_text = ""
     if os.path.exists(args.style):
-        with open(args.style, "r", encoding="utf-8") as f:
-            style_text = f.read()
+        style_text = read_text_flexible(args.style)
         print(f"Using writing-style rules from {args.style}.")
     elif args.style != "style_rules.txt":
         sys.exit(f"Style file not found: {args.style}")
@@ -225,7 +269,7 @@ def main():
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = resolve_output_path(args.out, "research_packs", f"research_pack_{stamp}.md")
-    pack = build_pack(outline_text, args.per_section, style_text)
+    pack = build_pack(outline_text, args.per_section, style_text, filters)
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(pack)

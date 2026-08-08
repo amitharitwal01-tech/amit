@@ -16,7 +16,7 @@ import yaml
 
 CONFIG_PATH = "paper_pipeline_config.yaml"
 TRACKING_FIELDS = [
-    "Entry", "Title", "Authors", "DOI", "Year", "Category", "Status", "PDF_Path",
+    "Entry", "Title", "Authors", "DOI", "Year", "Journal", "Category", "Status", "PDF_Path",
     "Source_URL", "Publisher_URL",
     "Corresponding_Author", "Corresponding_Email", "Institute",
     "Key_Info", "Abstract", "Notes", "Last_Updated",
@@ -269,6 +269,22 @@ def resolve_output_path(user_value, default_dir, default_name):
     return path
 
 
+def read_text_flexible(path):
+    """Read a text file whatever its encoding. Outlines and question
+    files arrive saved by Notepad ("ANSI" = the legacy Windows code
+    page, or "Unicode" = UTF-16) as often as UTF-8 — a strict
+    utf-8 open() crashes on the first curly quote in those, which used
+    to kill the research-pack builder with a UnicodeDecodeError."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", errors="replace")
+
+
 EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
@@ -370,12 +386,14 @@ def fetch_crossref_metadata(doi, session, timeout):
         })
 
     titles = message.get("title") or []
+    journals = (message.get("container-title") or []) + (message.get("short-container-title") or [])
 
     return {
         "year": year,
         "authors": authors,
         "abstract": strip_jats_markup(message.get("abstract", "")),
         "title": titles[0].strip() if titles else "",
+        "journal": journals[0].strip() if journals else "",
     }
 
 
@@ -452,10 +470,16 @@ def enrich_record(record, entry_number, session, timeout, downloads_dir):
     key_info_needs_upgrade = not CONTRIBUTION_MARKERS.search(record.get("Key_Info") or "")
 
     meta = {}
-    if doi and (not record.get("Year") or key_info_needs_upgrade or not record.get("Abstract")):
+    if doi and (not record.get("Year") or key_info_needs_upgrade or not record.get("Abstract")
+                or not record.get("Journal")):
         meta = fetch_crossref_metadata(doi, session, timeout)
     if not record.get("Year"):
         record["Year"] = meta.get("year", "")
+    if not record.get("Journal"):
+        # Journal name from CrossRef — this is what --journal filters
+        # match against, and it backfills sheets from before the column
+        # existed the next time Stage 1 runs.
+        record["Journal"] = meta.get("journal", "")
     if not record.get("Authors") and meta.get("authors"):
         record["Authors"] = "; ".join(a["name"] for a in meta["authors"])
     if key_info_needs_upgrade:
@@ -702,6 +726,7 @@ def main():
                 # fetched up front so the file can be named properly.
                 meta = fetch_crossref_metadata(doi, session, timeout)
                 record["Year"] = meta.get("year", "")
+                record["Journal"] = meta.get("journal", "")
                 if not record["Authors"] and meta.get("authors"):
                     record["Authors"] = "; ".join(a["name"] for a in meta["authors"])
                 record["Key_Info"] = summarize_abstract(meta.get("abstract", ""))

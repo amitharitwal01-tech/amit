@@ -25,6 +25,11 @@ Usage:
     python ask_library.py "your question or whole paragraph here"
     python ask_library.py --file question.txt
     python ask_library.py --no-ai "..."   # force verbatim-passages mode
+
+Library filters narrow which papers may answer (combine freely):
+    python ask_library.py "..." --pack --journal "nature energy" --since 2023
+    python ask_library.py "..." --pack --years 2020,2023-2025 --category solar-cell
+    python ask_library.py "..." --pack --entries 12,45,100-110
 """
 import argparse
 import os
@@ -34,7 +39,7 @@ from datetime import datetime
 
 import requests
 
-from doi_resolver import load_config, resolve_output_path
+from doi_resolver import load_config, read_text_flexible, resolve_output_path
 import build_index
 
 ANSWERS_DIR = "answers"
@@ -243,11 +248,16 @@ def decompose_question(question, llm):
     return split_into_subquestions(question)
 
 
+def passage_meta(r):
+    # "(2024, Nature Energy, solar-cell)" — journal included when known.
+    return "(" + ", ".join(bit for bit in (r["year"], r.get("journal", ""), r["category"]) if bit) + ")"
+
+
 def format_passages(results):
     blocks = []
     for r in results:
         label = f"[Entry {r['entry']}, p.{r['page']}]"
-        blocks.append(f"{label} ({r['year']}, {r['category']}) {r['title'][:90]}\n{r['text']}")
+        blocks.append(f"{label} {passage_meta(r)} {r['title'][:90]}\n{r['text']}")
     return "\n\n".join(blocks)
 
 
@@ -255,7 +265,7 @@ def verbatim_answer(results):
     lines = []
     for r in results:
         lines.append(
-            f"**[Entry {r['entry']}, p.{r['page']}]** ({r['year']}) {r['title'][:90]}:\n"
+            f"**[Entry {r['entry']}, p.{r['page']}]** {passage_meta(r)} {r['title'][:90]}:\n"
             f"> {r['text']}"
         )
     return "\n\n".join(lines)
@@ -291,7 +301,7 @@ def build_references(db, entries):
     return refs
 
 
-def export_question_pack(question, db, embedder, top_k, out=None):
+def export_question_pack(question, db, embedder, top_k, out=None, filters=None):
     # The slow part of local answering is the AI generation, not the
     # retrieval — so do only the fast part here and hand the writing to
     # Claude: everything it needs (question, sub-questions, evidence
@@ -317,20 +327,27 @@ def export_question_pack(question, db, embedder, top_k, out=None):
         f"**Question:** {question}",
         "",
     ]
+    if filters:
+        lines += [f"**Library filters applied:** {build_index.describe_filters(filters)}", ""]
 
     used_entries = set()
+    any_results = False
     for i, sub in enumerate(subs, 1):
         print(f"[{i}/{len(subs)}] retrieving ...")
-        results = build_index.retrieve(db, embedder, sub, top_k=top_k)
+        results = build_index.retrieve(db, embedder, sub, top_k=top_k, filters=filters)
         lines += [f"## Evidence for part {i}: {sub}", ""]
         if not results:
             lines += ["_No relevant passages found in the library._", ""]
             continue
+        any_results = True
         for r in results:
             used_entries.add(int(r["entry"]) if str(r["entry"]).isdigit() else 0)
-            lines.append(f"**[Entry {r['entry']}, p.{r['page']}]** ({r['year']}, {r['category']}) {r['title'][:90]}")
+            lines.append(f"**[Entry {r['entry']}, p.{r['page']}]** {passage_meta(r)} {r['title'][:90]}")
             lines.append(f"> {r['text']}")
             lines.append("")
+
+    if not any_results and filters:
+        sys.exit(build_index.explain_no_matches(db, filters))
 
     refs = build_references(db, sorted(e for e in used_entries if e))
     if refs:
@@ -369,11 +386,12 @@ def main():
     )
     parser.add_argument("--out", help="where to save the result: a file, or a folder "
                         "to keep the default timestamped name inside it (default: answers/)")
+    build_index.add_filter_args(parser)
     args = parser.parse_args()
+    filters = build_index.filters_from_args(args)
 
     if args.file:
-        with open(args.file, "r", encoding="utf-8") as f:
-            question = f.read().strip()
+        question = read_text_flexible(args.file).strip()
     else:
         question = " ".join(args.question).strip()
     if not question:
@@ -385,10 +403,12 @@ def main():
     db = build_index.open_db()
     if db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0:
         sys.exit("The library index is empty — run  python build_index.py  first.")
+    if filters:
+        print(f"Library filters: {build_index.describe_filters(filters)}")
     embedder = build_index.get_embedder()
 
     if args.pack:
-        export_question_pack(question, db, embedder, args.top, args.out)
+        export_question_pack(question, db, embedder, args.top, args.out, filters)
         return
 
     llm = None
@@ -416,12 +436,14 @@ def main():
 
     sections = []
     used_entries = set()
+    any_results = False
     for i, sub in enumerate(subs, 1):
         print(f"\n[{i}/{len(subs)}] retrieving + answering ...", flush=True)
-        results = build_index.retrieve(db, embedder, sub, top_k=args.top)
+        results = build_index.retrieve(db, embedder, sub, top_k=args.top, filters=filters)
         if not results:
             sections.append((sub, "_No relevant passages found in the library._", []))
             continue
+        any_results = True
 
         if llm:
             prompt = f"Sub-question: {sub}\n\nSource passages:\n\n{format_passages(results)}"
@@ -444,7 +466,12 @@ def main():
 
         sections.append((sub, body, results))
 
+    if not any_results and filters:
+        sys.exit(build_index.explain_no_matches(db, filters))
+
     lines = ["# Answer from your library", "", f"**Question:** {question}", ""]
+    if filters:
+        lines += [f"**Library filters applied:** {build_index.describe_filters(filters)}", ""]
     if not llm:
         lines += [
             "> ⚠ **No local AI was active for this run.** What follows are "
