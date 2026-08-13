@@ -1,0 +1,129 @@
+REPORT RULES — ARCHITECTURE, EXHIBITS, AND FORMATTING
+(the counterpart to style_rules.txt. That file governs sentences and
+paragraphs; this one governs what a report IS: how it is structured, what it
+prioritises, how evidence is turned into figures and tables, and how the page
+is laid out. Both apply to every report the tool produces.)
+
+========================================================================
+0. STATUS — WHAT IS SETTLED AND WHAT IS NOT
+========================================================================
+Section 1 is settled: it is the drafting priority, given directly by the author,
+and it applies to every report type.
+
+Sections 2 onward are DERIVED FROM EXEMPLARS and are not yet written. They will
+be filled in from a page-by-page study of the six benchmark reports listed in
+references/README.md — consulting-report craft, three BCG reports, a Global
+Renewables Alliance financing report, and an ERT infrastructure report. Every
+rule in those sections must be traceable to something observed in one of those
+files and must cite the source number and page. Nothing goes in from memory or
+from generic advice about consulting decks.
+
+Until those sections exist, this file does not yet describe how a report should
+look. Do not treat the headings below as rules — they are the agenda.
+
+========================================================================
+1. DRAFTING PRIORITY — WHAT EARNS A PLACE IN THE REPORT
+========================================================================
+When drafting any report, four things decide what goes in and in what order:
+RELEVANCE, ORIGINALITY, FRESHNESS, CREDIBILITY. And the raw material is
+everything the workspace holds, not one retrieval query's top hits.
+
+1.1 RELEVANCE — earn the place, do not score it
+- A passage belongs in the report because it advances the section's argument,
+  not because it ranked highly for a similarity query. Retrieval proposes
+  candidates; judgement selects.
+- Cut near-duplicates. Three papers making the same point are one claim with
+  three citations, not three paragraphs.
+- If a retrieved passage does not change what the section concludes, drop it.
+  Volume is not coverage.
+
+1.2 ORIGINALITY — the report must contain something no source contains
+- The value added is the connective tissue: the comparison across papers, the
+  reconciliation of results that disagree, the pattern visible only once the
+  studies are laid side by side.
+- Test every paragraph: if it could be replaced by one paper's abstract, it is
+  a summary, not a report. Rewrite it as an integrated claim.
+- Comparisons across sources are the report's own contribution — a table or
+  chart assembled from many papers is original work even when every value in it
+  is cited.
+
+1.3 FRESHNESS — date the evidence and show the direction
+- Prefer the current state of the art where the science has moved; keep the
+  foundational citation where a claim rests on it.
+- Attach a date to claims about "best", "highest", "state of the art". A record
+  value without its year is a claim with a hidden expiry.
+- Where the newest evidence in the library on a point is old, say so — the
+  field may have moved past what the library holds. That is a finding, not a
+  gap to paper over.
+- Prefer showing a trend over a snapshot when the sources support it.
+
+1.4 CREDIBILITY — every claim traceable, every disagreement visible
+- Every factual claim carries its citation as [Entry N, p.X]. No exceptions.
+- Distinguish the weight of evidence: "one study reports" is not "the weight of
+  evidence supports". Say which one it is.
+- Keep the condition attached to every conditional value — temperature,
+  humidity, illumination, scan direction, hours, area. A number without its
+  measurement condition is not evidence.
+- Surface conflicts rather than choosing the convenient result, and where
+  possible explain the difference.
+- Never bridge a gap with uncited general knowledge. Where the library does not
+  support a needed point, mark it [general knowledge - verify] or state that the
+  library does not cover it.
+
+1.5 SOURCE BREADTH — use everything in the system
+Draw on every source the workspace holds, not only the text chunks returned by
+one query:
+- the full-text index (passages), and the figure/table caption index;
+- the tracking sheet's metadata — abstract, year, category, authors, DOI;
+- the PDFs themselves, when a passage needs its surrounding context;
+- the outline files, and any earlier catalogs, answers, and research packs.
+A point supported from several of these at once is stronger than the same point
+supported from one; prefer it, and show the convergence.
+
+========================================================================
+2. DOCUMENT ARCHITECTURE                                   [from exemplars]
+========================================================================
+Section order, what the opening pages do, where a conclusion sits relative to
+its evidence, section length, and navigation.
+
+========================================================================
+3. THE EXHIBIT SYSTEM — FIGURES AND CHARTS                 [from exemplars]
+========================================================================
+Which chart form carries which kind of claim; numbering, titling, captioning,
+sourcing, footnoting; exhibit density; what is never drawn as a chart.
+
+NOTE: the tool currently forbids real figures — research packs instruct the
+writer to emit bordered placeholder boxes instead of images
+(export_for_claude.py). Whatever this section concludes, that constraint has to
+be revisited: a report with no exhibits cannot match the exemplars. The
+author has asked to design the figure approach separately, so this section
+records the rules and defers the mechanism to that discussion.
+
+========================================================================
+4. TABLES                                                  [from exemplars]
+========================================================================
+When a table beats a chart, column ordering, alignment and rounding, and how a
+table is made readable at a glance.
+
+========================================================================
+5. COLOUR, TYPOGRAPHY, AND PAGE DESIGN                     [from exemplars]
+========================================================================
+The working palette and what each colour means, emphasis, heading hierarchy,
+grid, white space, callouts, pull quotes, sidebars.
+
+========================================================================
+6. HEADLINES AND SUMMARY LANGUAGE                          [from exemplars]
+========================================================================
+How headlines and exhibit titles are written, summary style, and how numbers
+are framed in prose.
+
+========================================================================
+7. RULES PER REPORT TYPE
+========================================================================
+The tool produces four reports. Each gets its own rule set built on sections
+1-6; all four are in scope.
+
+7.1 THE FINAL REVIEW DRAFT — the manuscript written from a research pack.
+7.2 THE RESEARCH PACK — research_packs/research_pack_<timestamp>.md.
+7.3 THE LIBRARY CATALOG — catalogs/catalog_<timestamp>.md.
+7.4 THE QUESTION ANSWERS — answers/, from ask_library.py.
