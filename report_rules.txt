@@ -5,21 +5,26 @@ prioritises, how evidence is turned into figures and tables, and how the page
 is laid out. Both apply to every report the tool produces.)
 
 ========================================================================
-0. STATUS — WHAT IS SETTLED AND WHAT IS NOT
+0. WHERE THESE RULES COME FROM
 ========================================================================
-Section 1 is settled: it is the drafting priority, given directly by the author,
-and it applies to every report type.
+Sections 2-8 are derived from a page-by-page reading of four benchmark
+reports, held in references/. Every rule cites the page it was observed on.
+Nothing here is generic advice about consulting decks.
 
-Sections 2 onward are DERIVED FROM EXEMPLARS and are not yet written. They will
-be filled in from a page-by-page study of the six benchmark reports listed in
-references/README.md — consulting-report craft, three BCG reports, a Global
-Renewables Alliance financing report, and an ERT infrastructure report. Every
-rule in those sections must be traceable to something observed in one of those
-files and must cite the source number and page. Nothing goes in from memory or
-from generic advice about consulting decks.
+  [01] BCG, "The Sustainability Imperative in Emerging Markets", Mar 2023.
+       16 pp, PORTRAIT report. Prose-led, exhibits as designed colour blocks.
+  [02] BCG, "Guide to Cost and Growth" (Executive Perspectives), Jan 2025.
+       24 pp, LANDSCAPE deck. One message per page, action titles.
+  [03] BCG + BayWa r.e., "How Agri-PV can Boost the Transition to
+       Regenerative Agriculture in Europe", Nov 2024. 28 pp, PORTRAIT report
+       with numbered exhibits, schematics, and a numeric appendix.
+  [04] BCG, "Investor Perspectives Series Q1 & Q2 2025", 30 pp, LANDSCAPE
+       survey deck. Maximum data density, every number against a baseline.
 
-Until those sections exist, this file does not yet describe how a report should
-look. Do not treat the headings below as rules — they are the agenda.
+Citations read [03 p11] = document 03, page 11.
+
+Section 1 is not from the exemplars. It is the drafting priority given
+directly by the author, and it outranks everything else here.
 
 ========================================================================
 1. DRAFTING PRIORITY — WHAT EARNS A PLACE IN THE REPORT
@@ -44,8 +49,8 @@ everything the workspace holds, not one retrieval query's top hits.
 - Test every paragraph: if it could be replaced by one paper's abstract, it is
   a summary, not a report. Rewrite it as an integrated claim.
 - Comparisons across sources are the report's own contribution — a table or
-  chart assembled from many papers is original work even when every value in it
-  is cited.
+  chart assembled from many papers is original work even when every value in
+  it is cited.
 
 1.3 FRESHNESS — date the evidence and show the direction
 - Prefer the current state of the art where the science has moved; keep the
@@ -67,8 +72,8 @@ everything the workspace holds, not one retrieval query's top hits.
 - Surface conflicts rather than choosing the convenient result, and where
   possible explain the difference.
 - Never bridge a gap with uncited general knowledge. Where the library does not
-  support a needed point, mark it [general knowledge - verify] or state that the
-  library does not cover it.
+  support a needed point, mark it [general knowledge - verify] or state that
+  the library does not cover it.
 
 1.5 SOURCE BREADTH — use everything in the system
 Draw on every source the workspace holds, not only the text chunks returned by
@@ -81,49 +86,382 @@ A point supported from several of these at once is stronger than the same point
 supported from one; prefer it, and show the convergence.
 
 ========================================================================
-2. DOCUMENT ARCHITECTURE                                   [from exemplars]
+2. DOCUMENT ARCHITECTURE
 ========================================================================
-Section order, what the opening pages do, where a conclusion sits relative to
-its evidence, section length, and navigation.
+
+2.1 PICK THE FORMAT FROM THE JOB
+The exemplars use two shapes, and they are not interchangeable.
+- PORTRAIT REPORT [01][03] — an argument carried in prose, with exhibits
+  punctuating it. Use for the literature review and anything read linearly.
+- LANDSCAPE DECK [02][04] — one message per page, exhibit-led, skimmable in
+  any order. Use for catalogs, coverage assessments, and status reporting.
+Do not write a portrait report as a deck of bullets, or a deck as pages of
+paragraphs.
+
+2.2 SECTIONS EVERY REPORT MUST HAVE
+Observed in all four, in this order:
+  (a) Cover — title, date, authors, and for data-led reports the collection
+      window on the cover itself [04 p1: "SURVEYS CONDUCTED MARCH 24-25, 2025,
+      AND APRIL 8-9, 2025"].
+  (b) Contents, once past ~15 pages [03 p3].
+  (c) Executive summary [02 p3][03 p4].
+  (d) Body, in sections.
+  (e) Methodology [01 p8][04 p2].
+  (f) Limitations / risks [03 p16].
+  (g) Recommendations or conclusion [03 p19][01 p11].
+  (h) Appendix — the full numbers [03 pp20-22].
+  (i) Authors, acknowledgements, disclaimer [01 pp12-14].
+
+2.3 SECTION TITLES CARRY CONTENT
+Contents entries are statements, not labels [03 p3]: "Recap RegenAg: A Triple
+Win with Required Transition Phase", "What's in it for Farmers: Increasing
+Land Use Efficiency, Economic Performance and Income Diversification". Never
+"Introduction / Methods / Results / Discussion" where a content title is
+possible.
+
+2.4 THE EXECUTIVE SUMMARY MIRRORS THE DOCUMENT
+- One block per body section, in the same order, with the section's name as the
+  block label [02 p3 — three labelled blocks matching the three agenda items].
+- Each block: a lead sentence, evidence bullets carrying the numbers, a closing
+  sentence.
+- Bold carries the load. A reader who reads only the bold text must get the
+  whole argument [02 p3].
+- For a modelled or quantitative report, state the headline findings as an
+  explicit list of values [03 p4: small farm EUR 15,000-17,000/yr; medium
+  55,000-75,000; large 175,000-235,000].
+- The summary states what was done, not only what was found [03 p4: "we
+  conducted a study in Germany based on models of three farm archetypes"].
+
+2.5 NAVIGATION
+- In decks, repeat a divider page before each section with all sections listed,
+  the current one green and bold, the rest grey [02 pp4,10].
+- In portrait reports, open each section with a full-width image, then the
+  heading, then a drop cap on the first paragraph [03 pp5,7,10,16,19].
+- Running feet on every page: publisher left, report title right, page number
+  [01 pp2-14][03 pp5-22].
+
+2.6 WHERE DETAIL GOES
+Charts in the body; full numeric tables in the appendix [03 p22]. The body
+carries the argument visually; the appendix carries the numbers that make it
+reproducible. Material that is real but off the main line goes in a visually
+distinct sidebar on a tinted field [03 p15], not into the flow.
 
 ========================================================================
-3. THE EXHIBIT SYSTEM — FIGURES AND CHARTS                 [from exemplars]
+3. THE MESSAGE LAYER
 ========================================================================
-Which chart form carries which kind of claim; numbering, titling, captioning,
-sourcing, footnoting; exhibit density; what is never drawn as a chart.
 
-NOTE: the tool currently forbids real figures — research packs instruct the
-writer to emit bordered placeholder boxes instead of images
-(export_for_claude.py). Whatever this section concludes, that constraint has to
-be revisited: a report with no exhibits cannot match the exemplars. The
-author has asked to design the figure approach separately, so this section
-records the rules and defers the mechanism to that discussion.
+3.1 ACTION TITLES — every page title is an assertion
+[02 pp5-14][04 pp7-10]. "40% of executives feel unprepared for market shocks
+heading into 2025" [02 p6], not "Market shock preparedness". "Stagnating trade
+and inflation surged as top concerns — up 28pp and 22pp, respectively, since
+November" [04 p8]. Reading the titles alone must give the argument.
+
+3.2 STATE THE QUESTION BEING ANSWERED
+A question line sits above the exhibit, in green bold, naming exactly what was
+asked or analysed [02 p5: "How do executives view the stability of the markets
+they are operating in?"]. In a literature review this is the review question
+the section answers.
+
+3.3 ONE MESSAGE PER PAGE, ONE EXHIBIT PER PAGE
+[02, throughout]. If a page carries two messages, it is two pages.
+
+3.4 THE SKIM LAYER
+- Bold inside body text marks claims and numbers only, never connective prose
+  [02 p3][04 p4].
+- Bold run-in heads structure continuous prose [01 p6: "Strengthened Market
+  Access." / "Higher Consumer Acceptance." / "Increased Appeal to Talent.";
+  03 p9: "Shade provision:" / "Wind protection:" / "Soil regeneration:"]. This
+  is the single most useful device for making a long review scannable.
+- A promised count is delivered exactly [01 p10: "Seven Key Success Factors"
+  followed by seven bullets].
+
+3.5 CLOSING
+The conclusion is short and returns to the argument's payoff, marked
+typographically by a drop cap [01 p11]. Recommendations are addressed to named
+actors with bold run-in heads [03 p19: "EU:" / "Member States:" /
+"Regulators:"], each one specific and actionable.
 
 ========================================================================
-4. TABLES                                                  [from exemplars]
+4. THE EXHIBIT SYSTEM
 ========================================================================
-When a table beats a chart, column ordering, alignment and rounding, and how a
-table is made readable at a glance.
+
+4.1 ANATOMY — every exhibit carries all of these
+  1. A NUMBER AND TITLE. "Exhibit 4: Farm archetypes and Agri-PV models"
+     [03 p11]. In portrait reports the title may instead be a two-tone
+     headline: the claim fragment in colour, the completion in plain
+     [01 p3: "Most emerging market exports go to developed markets, where
+     environmental rules are toughening"; 01 p5; 01 p10].
+  2. A SUBTITLE STATING THE MEASURE AND UNITS. "2050 combined GDP at risk
+     under current policies (%)" [01 p5]; "Revenue compound annual growth,
+     2016-2021 (%)" [01 p10]; "Revenues & costs per year, first 7 years in
+     thousand EUR, based on 2.5 ha Agri-PV on pasture land" [03 p22].
+  3. A SOURCE LINE. Present on every exhibit without exception
+     [01 pp3,4,5,9,10,11][02 pp3-14][03 pp11-14][04 pp3-10].
+  4. A NOTE LINE where a metric or assumption needs defining [01 p11: "Total
+     shareholder return = capital gains plus dividends divided by stock
+     purchase price"; 03 p12: "Excluding subsidiaries; assuming purely
+     conventional farming as starting point"].
+  5. NUMBERED FOOTNOTES for scope, definitions, and caveats [02 p3: "1. Asia-
+     Pacific includes India, Australia, Japan, and South Korea"].
+  6. A LEGEND wherever colour or shape encodes meaning [03 p11][04 pp6,8,9].
+
+4.2 THE SOURCE LINE DISTINGUISHES EVIDENCE FROM FRAMEWORK
+Primary-data pages cite the instrument and n: "BCG global executive survey on
+strategic priorities (N=570) Q4 2024; BCG analysis" [02 p5]. Framework pages
+cite only "BCG analysis" [02 pp13,14]. A reader can tell at a glance whether
+they are looking at measured evidence or the authors' construct. Apply the
+same split: retrieved-from-library evidence versus the review's own synthesis.
+
+4.3 CHOOSE THE FORM FROM THE CLAIM
+  - Share of a whole, one number that matters .... donut with the relevant
+    wedge exploded and coloured, the rest grey [02 p6][02 p9]
+  - Composition across groups ...................... stacked bars, values inside
+    the segments, connector lines across time [02 p5]
+  - Ranked comparison ............................. horizontal bars, longest
+    first, values at bar ends [04 p8][01 p5]
+  - Two states of the same measure ................ paired bars, prior state
+    pale, current state saturated, value labels on the current bar only
+    [02 pp7-8]
+  - Change against a baseline ..................... delta column of circular
+    chips beside the bars [04 pp8,9], or bracketed arrows between pairs
+    [04 p7]
+  - Direction with magnitude ...................... diverging bars around a
+    zero line [04 pp7,9]
+  - Magnitude of a few values ..................... proportional circles, value
+    inside, label beneath [01 p10]; or rectangles sized by area [01 p4]
+  - Frequency distribution ........................ proportional circles with
+    counts as large numerals and members listed alongside [01 p9]
+  - Position on a continuum ....................... vertical number line with
+    plotted, labelled points [04 p10]
+  - Trajectory over time with uncertainty ......... line with a shaded band for
+    the range, endpoint values called out [03 pp12-14]
+  - Time series against events .................... line with shaded bands for
+    observation windows and dated event arrows below the axis [04 p3]
+  - Options across dimensions ..................... matrix with check-circles
+    and a legend of states [03 p11]
+  - Taxonomy or classification .................... spanning header bands over
+    columns, one schematic or cell per class [03 p6][03 p20]
+  - Mechanism or physical arrangement ............. annotated schematic with
+    colour-coded zones and a legend [03 pp8,9]
+  - Sequence or process ........................... tapered arrow with
+    milestone boxes at node points [02 p14]
+  - A list that matters ........................... the list, set as a designed
+    exhibit on a colour field [01 p7]
+
+A schematic is a first-class exhibit [03 pp8,9]. For a scientific review,
+mechanism diagrams count fully — an exhibit does not have to plot data.
+
+4.4 TEMPLATE REUSE MAKES CASES COMPARABLE
+Where several cases are analysed the same way, draw them with one identical
+template so they compare at a glance [03 pp12,13,14 — three farm archetypes,
+same axes, same four series, same phase bands, same annotation style]. Never
+redesign a chart between cases that a reader is meant to compare.
+
+4.5 SPOTLIGHTING — same exhibit, moving emphasis
+To make one dataset carry two arguments, repeat the exhibit and desaturate
+everything except the subject of the page; change the title and commentary to
+match [02 pp7-8]. De-emphasise by fading, never by deleting.
+
+4.6 ANNOTATE ON THE CHART
+Put the explanation where the eye already is: callout boxes with leader lines
+anchored to the feature they explain [03 p12: "Income gap due to EUR 110K
+equity payment in year 1"; "significant profit increase will occur after year
+19, once the entire loan has been repaid"]. Call out endpoint values and the
+delta between series directly [03 pp12-14][01 p11].
+
+4.7 LABEL DIRECTLY, DROP THE FURNITURE
+Values sit in or beside the marks; axes are reduced to what is still needed
+[01 p11 — the entire x-axis is "2017" and "2022"]. Minimal gridlines. Where a
+direct label can replace an axis, it does.
+
+4.8 DENSITY, AND CALLING EXHIBITS OUT
+- Portrait reports: roughly one exhibit per one to two pages, and text-only
+  spreads are allowed [01 p6].
+- Decks: one per page [02][04].
+- Every exhibit is referenced from the text at the point it is needed
+  [03 pp6,8,9: "(see exhibit 1)", "(see exhibit 2)", "(see exhibit 3)"].
+  An exhibit no sentence points to does not belong.
+
+4.9 NEVER
+No 3D bars, no decorative gradients, no drop shadows on chart elements, no
+chartjunk, no dense gridlines, no axis clutter, no colour used for variety.
+Observed in none of the four documents.
 
 ========================================================================
-5. COLOUR, TYPOGRAPHY, AND PAGE DESIGN                     [from exemplars]
+5. TABLES
 ========================================================================
-The working palette and what each colour means, emphasis, heading hierarchy,
-grid, white space, callouts, pull quotes, sidebars.
+- Title plus a subtitle giving units, basis, and period [03 p22].
+- Units belong in the row label: "Installed capacity (kwp)", "Tariff (in
+  ct/kwh)" [03 p22].
+- Group rows under bold group headers, with bold subtotal rows [03 p22:
+  PV Revenue / PV Costs / Other Effects, each with a Total row].
+- A COMMENTS COLUMN carrying the derivation of each row [03 p22: "Product of
+  cap., prod., and tariff"; "90% financed at 4% interest"; "85% of subsidy
+  remains"]. This is what makes a table auditable — adopt it as standard.
+- Negatives in parentheses; hairline grid, no heavy rules; zebra striping on
+  wide classification tables [03 p20].
+- Column groups under spanning headers where columns belong together
+  [03 p11][04 p9].
+- A table beats a chart when the reader needs exact values, when rows are
+  heterogeneous, or when each row needs its own note. Otherwise chart it.
 
 ========================================================================
-6. HEADLINES AND SUMMARY LANGUAGE                          [from exemplars]
+6. COLOUR, TYPOGRAPHY, AND PAGE DESIGN
 ========================================================================
-How headlines and exhibit titles are written, summary style, and how numbers
-are framed in prose.
+
+6.1 COLOUR IS SEMANTIC, NEVER DECORATIVE
+- Fix a meaning per colour and hold it for the whole document [02 p5: green =
+  optimists, grey = neutral, red = pessimists; 04 p6: teal bullish, grey
+  neutral, salmon bearish, with the legend printed].
+- One accent colour does the pointing; everything else is neutral [01, green
+  on greys throughout].
+- Grey is for the residual, the superseded, and the de-emphasised [02 p9 — the
+  15% "no action taken" segment, explained in a footnote].
+- Saturation encodes recency or focus: pale = prior state, saturated = current
+  [02 pp7-8].
+- A sequential ramp encodes an ordered scale [04 p10: dark green de-escalation
+  through pale green and salmon to dark red escalation].
+- Colour may encode significance as well as direction [04 p8: dark chips =
+  more significant change, pale chips = less significant, with a legend].
+- Any colour that carries meaning gets a legend. No exceptions.
+
+6.2 TYPOGRAPHY
+- Two-tone headlines: claim fragment in the accent colour, completion in plain
+  [01 pp3,4,5,10,11].
+- Large numerals are the visual anchor of a statistic exhibit [01 pp4,9,10].
+- Drop caps open a major section or the conclusion [01 p11][03 pp4,5,7,10].
+- Bold marks claims; italic marks the comparison line and sub-questions
+  [04 p6][02 p9].
+- Small caps or a light label above the title carries the series name
+  [01 p1: "GLOBAL CHALLENGERS"; 02 p1: "Executive Perspectives"].
+
+6.3 PAGE
+- Portrait: two columns, generous leading, wide margins, exhibits breaking
+  full width [01][03].
+- Landscape: roughly 60/40 exhibit to commentary, or full-width exhibit with a
+  callout band beneath [02 pp7,8,6].
+- Header bars carry full-sentence claims, not category labels [04 pp7,10].
+- Photographs are captioned and credited [03 p4: "Crop-PV system, Pochlarn
+  Project (RWA), 2023"; 03 p10: "(c)ZIMMERMANN PV-Steel Group"].
+- Page number and rights line on every page [01][02][03][04].
 
 ========================================================================
-7. RULES PER REPORT TYPE
+7. EVIDENCE INTEGRITY — THE RULES THAT MAKE A REPORT CREDIBLE
 ========================================================================
-The tool produces four reports. Each gets its own rule set built on sections
-1-6; all four are in scope.
+These are the exemplars' strongest habit and the biggest gap in the tool's
+current output.
 
-7.1 THE FINAL REVIEW DRAFT — the manuscript written from a research pack.
-7.2 THE RESEARCH PACK — research_packs/research_pack_<timestamp>.md.
-7.3 THE LIBRARY CATALOG — catalogs/catalog_<timestamp>.md.
-7.4 THE QUESTION ANSWERS — answers/, from ask_library.py.
+7.1 MARK WHICH EVIDENCE BASE EACH PAGE RESTS ON
+A badge under the title names the data wave the page draws on [04 pp3-10:
+green chip "April 8-9"]. In a literature review, mark which body of evidence
+an exhibit rests on — which entries, which years.
+
+7.2 GIVE THE INSTRUMENT, NOT ONLY THE RESULT
+Footnotes carry the exact question asked [04 p8: "Survey question: What are
+the most important risks for investors to consider in today's environment?
+Rank the top three."]. The equivalent: state the measurement method and
+conditions behind every value compared.
+
+7.3 STATE n, ALWAYS, INCLUDING THE EXCEPTIONS
+[04 p4: "n = 150 for each survey, except for June 2023 (n = 151), January 2024
+(n = 153), September 2024 (n = 153), and March 2025 (n = 151)"]. The
+equivalent: how many entries support this claim.
+
+7.4 EVERY NUMBER AGAINST ITS BASELINE
+Never a bare value. Give the prior state, the comparator, or both, and compute
+the delta for the reader [04 pp4,7,8,9][01 p3: "just 48" against "64"].
+
+7.5 RANGES, NOT FALSE PRECISION
+[03: "10%-15%", "EUR 15,000-17,000", "six to ten years"]. Where a projection
+is uncertain, draw the uncertainty as a band [03 pp12-14].
+
+7.6 STATE ASSUMPTIONS WHERE THEY BITE
+In the prose [03 p8: "our assumption is that productive land is reduced by
+1%-5% on permanent pastureland and 12%-15% on cropland"], and in the exhibit's
+Note line [03 p12].
+
+7.7 FLAG THE STATUS OF AN INPUT
+[03 p12: a tariff "currently under consideration but not yet implemented in
+German regulations"]. A value that may not hold is labelled as such.
+
+7.8 MARK THE EDGE OF SCOPE INSIDE THE EXHIBIT
+[03 p11: red dashed outlines = "Case to be quantified for report"; 03 p20: a
+column greyed out and struck "Not covered in the current document"]. Show what
+was not examined rather than leaving the reader to assume it was.
+
+7.9 LIMITATIONS GET A SECTION, NOT A SENTENCE
+[03 p16: "We have used simplified models of single farms for this report but
+in the real world..."; 01 p8: "ESG scoring and grading methodology is still
+evolving. So we sometimes had to rely on inconsistent or incomplete
+datasets"; 04 p2: "not segmented by investor type"].
+
+7.10 DISCLOSE THE SMALL THINGS TOO
+Rounding [04 p8: "Any apparent discrepancies ... are due to rounding"], and
+the definition of any derived metric where it first appears [04 p9: "Net
+optimism is the share of investors considering the market to be too optimistic
+minus the share considering it too pessimistic"].
+
+7.11 DEFINE BY CONTRAST WHERE A TERM IS CONFUSABLE
+[03 p21: "What isn't Agri-PV?" — side-by-side comparison with paired bullets].
+
+========================================================================
+8. RULES PER REPORT TYPE
+========================================================================
+Sections 1-7 apply to all four. What follows is what each type must do on top,
+and what currently blocks it.
+
+8.1 THE FINAL REVIEW DRAFT (the manuscript written from a research pack)
+Format: PORTRAIT REPORT [01][03].
+- Architecture per 2.2, with these mappings: Methodology = search strategy,
+  databases, inclusion and exclusion criteria, date of the search;
+  Limitations = what the library does not cover; Appendix = the full evidence
+  tables.
+- Section titles carry content (2.3). Executive summary mirrors the sections
+  and states the headline quantified findings as a list (2.4).
+- Bold run-in heads structure every long section (3.4) — this is the main
+  device that keeps a review scannable.
+- At least one exhibit per major section, each called out from the text (4.8).
+  For a review the workhorse forms are: the comparison chart assembled across
+  papers, the mechanism schematic, the taxonomy, and the trajectory-over-time
+  chart with an uncertainty band.
+- Every exhibit carries number, title, units subtitle, source (as [Entry N]
+  lists), note, and legend (4.1).
+- BLOCKER: export_for_claude.py:125-134 instructs the writer to emit bordered
+  placeholder boxes INSTEAD of images, so no exhibit can ever appear. This
+  must change before the rest of section 4 can apply. The author has asked to
+  design the figure approach separately; that discussion decides the
+  mechanism, not whether exhibits exist.
+
+8.2 THE RESEARCH PACK (research_packs/research_pack_<timestamp>.md)
+The pack is the writer's input, so it must carry everything sections 4-7 will
+demand downstream. It is not a report, and it is not a pile of quotes.
+- Group passages into CLAIMS, not a ranked list. Each claim: the statement,
+  the entries supporting it, the entries contradicting it, and the count.
+- Extract a NUMERIC LAYER: every value with its units, conditions, and entry.
+  Without this no comparison table or chart is constructible (7.4).
+- Mark evidence age per claim so freshness (1.3) can be applied.
+- Carry the measurement method and conditions with each value (7.2).
+- Propose exhibits: for each section, which claim deserves which form from 4.3,
+  and which entries supply the values.
+- State coverage honestly: which parts of the section spec the library does not
+  support (7.8).
+
+8.3 THE LIBRARY CATALOG (catalogs/catalog_<timestamp>.md)
+Format: LANDSCAPE DECK [02][04]. This is a coverage assessment, not a list.
+- Open with an executive summary of the library: size, span, concentration,
+  and the gaps (2.4).
+- Action titles stating what the coverage actually shows (3.1), not "By year".
+- Exhibits, at minimum: papers per year as a trend; a coverage matrix of theme
+  against year or method; a ranked bar of the best-represented topics; and an
+  explicit gaps exhibit marking what is thin or absent (7.8).
+- Current state: the entire analytics layer is two Counter lines rendered as
+  inline text (export_catalog.py:116-126). That is the gap.
+
+8.4 THE QUESTION ANSWERS (answers/, from ask_library.py)
+Shortest form, but the same integrity rules.
+- Lead with the answer, then the evidence (3.1).
+- State how many entries support it and how many conflict (7.3).
+- Give the baseline or comparator for every number (7.4).
+- Where the library cannot answer, say so plainly rather than padding (1.4).
+- An exhibit only where the answer is genuinely comparative; a one-line answer
+  does not need a chart (4.8).

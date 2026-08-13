@@ -1,57 +1,67 @@
-# Reference reports — drop the six exemplars here
+# Reference reports — the exemplars behind report_rules.txt
 
 These are the benchmark reports whose craft the tool's own reports are meant to
 match. They are the source material for `report_rules.txt` (the report-design
 standard), the same way a set of writing guides was the source material for
 `style_rules.txt`.
 
-## Why they live in the repo rather than being fetched
+Every rule in sections 2-8 of `report_rules.txt` cites the document number and
+page it was observed on, e.g. `[03 p11]`. Nothing in that file comes from
+memory or from generic advice about consulting decks — if a rule is not
+traceable to a page here, it does not belong there.
 
-The session that writes the rules cannot reach any of these six hosts —
-`slidemodel.com`, `web-assets.bcg.com`, `globalrenewablesalliance.org`, and
-`ert.eu` are all refused by the network egress policy. Committing the files is
-also the *better* option: rules about colour coding, exhibit layout, grid, and
-typography can only be derived from the rendered pages. A text scrape would
-throw away most of what these documents are being studied for.
+## The set
 
-## What to put here
+| # | File | Document | Pages | Shape |
+|---|---|---|---|---|
+| 01 | `01_bcg_sustainability-imperative-emerging-markets.pdf` | BCG, *The Sustainability Imperative in Emerging Markets*, Mar 2023 | 16 | Portrait report — prose-led, exhibits as designed colour blocks |
+| 02 | `02_bcg_guide-to-cost-and-growth.pdf` | BCG, *Guide to Cost and Growth* (Executive Perspectives), Jan 2025 | 24 | Landscape deck — one message per page, action titles |
+| 03 | `03_bcg-baywa_agri-pv-regenerative-agriculture.pdf` | BCG + BayWa r.e., *How Agri-PV can Boost the Transition to Regenerative Agriculture in Europe*, Nov 2024 | 28 | Portrait report — numbered exhibits, schematics, numeric appendix |
+| 04 | `04_bcg_investor-perspectives-q1-q2-2025.pdf` | BCG, *Investor Perspectives Series Q1 & Q2 2025* | 30 | Landscape survey deck — maximum data density |
 
-Download each source and commit it under the filename below. Keep the
-numbering — it is the order the sources are studied in, and the rules cite
-sources by these names.
+Between them these cover both shapes a report can take (portrait prose report,
+landscape deck) and the full exhibit range: data charts, schematics,
+taxonomies, comparison matrices, trajectory charts with uncertainty bands, and
+audit-grade numeric tables.
 
-| # | Filename | Source |
-|---|---|---|
-| 1 | `01_slidemodel_consulting-report-guide.pdf` | https://slidemodel.com/consulting-report-how-to-write-and-present-one/ |
-| 2 | `02_bcg_refining-oversight-ai-driven-world.pdf` | https://web-assets.bcg.com/99/93/6ed97aee4c94989306b346f6a005/refining-oversight-for-a-volatile-ai-driven-world.pdf |
-| 3 | `03_bcg_europe-deep-tech-opportunity.pdf` | https://web-assets.bcg.com/47/1a/b995bbe3487299578ea65ae6254b/unlocking-europes-8-trillion-deep-tech-opportunity.pdf |
-| 4 | `04_gra_financing-3x-renewables-2030.pdf` | https://globalrenewablesalliance.org/wp-content/uploads/2025/11/GRA_Financing-3xRenewables-by-2030.pdf |
-| 5 | `05_ert_strengthening-europes-energy-infrastructure.pdf` | https://ert.eu/wp-content/uploads/2024/04/ERT-Strengthening-Europes-energy-infrastructure_March-2024.pdf |
-| 6 | `06_bcg_2020-annual-sustainability-report.pdf` | https://web-assets.bcg.com/40/84/80b567044409b74c32806275a3c1/bcg-2020-annual-sustainability-report-apr-2021-r2.pdf |
+## Why they live in the repo
 
-Number 1 is a web article, not a PDF. Open it in a browser and use
-Print → Save as PDF, so the figures and callouts survive.
+Rules about colour coding, exhibit layout, grid, and typography can only be
+derived from the rendered pages — a text scrape throws away most of what these
+documents are being studied for. Keeping the files here means every citation in
+`report_rules.txt` stays checkable, and the standard can be extended or
+challenged later against the same evidence.
 
-Adding more exemplars later is welcome — continue the numbering and add a row.
-A report you personally admire is worth more than a famous one you do not.
+The session that wrote the rules also could not reach any of these publishers:
+`web-assets.bcg.com` and the other source hosts are refused by the network
+egress policy, so fetching them at read time is not an option.
 
-## What gets extracted from them
+## Adding more
 
-Each document is read page by page for:
+Continue the numbering and add a row. A report you personally admire is worth
+more than a famous one you do not — the point is to widen the range of forms
+the rules are drawn from, especially:
 
-- **Architecture** — section order, what the opening pages do, where the
-  argument's conclusion sits relative to its evidence, how long each part runs.
-- **Exhibits** — which chart form carries which kind of claim, how exhibits are
-  numbered, titled, captioned, sourced, and footnoted; the ratio of exhibits to
-  pages; what is never drawn as a chart.
-- **Tables** — when a table beats a chart, column ordering, how values are
-  aligned and rounded, how a table is made readable at a glance.
-- **Colour and type** — the working palette and what each colour *means*, how
-  emphasis is signalled, the heading hierarchy, the page grid, use of white
-  space, callouts, pull quotes, and sidebars.
-- **Language** — how headlines and exhibit titles are written (assertions
-  versus labels), summary style, and how numbers are framed in prose.
+- a scientific review or journal article, to ground the rules in the register
+  the tool actually writes in;
+- anything using an exhibit form not already in the set.
 
-Nothing is committed to the standard from memory or from generic advice about
-consulting decks: every rule in `report_rules.txt` is traceable to something
-observed in one of these files, and cites the source number and page.
+After adding one, re-read it page by page and fold what it shows into
+`report_rules.txt` with citations. Rules already there should be revised only
+against evidence, not preference.
+
+## What was extracted
+
+Each document was read for architecture (section order, what the opening pages
+do, where conclusions sit relative to evidence), exhibits (which form carries
+which claim, numbering, titling, sourcing, footnoting, density), tables (when a
+table beats a chart, grouping, units, derivations), colour and type (what each
+colour means, emphasis, hierarchy, grid), and language (how headlines and
+exhibit titles are written, how numbers are framed).
+
+The strongest single finding, and the biggest gap in the tool's current output,
+is section 7 of the standard: the habits that make a report credible — marking
+which evidence base each page rests on, giving the instrument and not only the
+result, stating n including exceptions, showing every number against a
+baseline, ranges instead of false precision, assumptions where they bite, and
+marking the edge of scope inside the exhibit itself.
